@@ -100,6 +100,7 @@ install(PROGRAMS
   scripts/dvl_setup.sh
   scripts/dronecan2mavros_battery.py
   scripts/dronecan2mavros_battery_v2.py
+  scripts/mavros_imu_rate_config.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

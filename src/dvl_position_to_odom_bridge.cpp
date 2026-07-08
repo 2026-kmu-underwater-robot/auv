@@ -15,23 +15,24 @@ public:
   {
     input_topic_ = declare_parameter<std::string>("input_topic", "/dvl/position");
     output_topic_ = declare_parameter<std::string>("output_topic", "/dvl/odometry");
-    frame_id_ = declare_parameter<std::string>("frame_id", "odom");
-    child_frame_id_ = declare_parameter<std::string>("child_frame_id", "base_link");
+    frame_id_ = declare_parameter<std::string>("frame_id", "dvl_odom");
+    child_frame_id_ = declare_parameter<std::string>("child_frame_id", "dvl");
     expected_type_ = declare_parameter<std::string>("expected_type", "position_local");
 
-    zero_position_on_start_ = declare_parameter<bool>("zero_position_on_start", true);
+    zero_position_on_start_ = declare_parameter<bool>("zero_position_on_start", false);
     zero_orientation_on_start_ = declare_parameter<bool>("zero_orientation_on_start", false);
     orientation_in_degrees_ = declare_parameter<bool>("orientation_in_degrees", true);
     require_status_zero_ = declare_parameter<bool>("require_status_zero", false);
-    estimate_twist_ = declare_parameter<bool>("estimate_twist", true);
-    reset_origin_on_jump_ = declare_parameter<bool>("reset_origin_on_jump", true);
+    estimate_twist_ = declare_parameter<bool>("estimate_twist", false);
+    reset_origin_on_jump_ = declare_parameter<bool>("reset_origin_on_jump", false);
+    use_dvl_position_stddev_ = declare_parameter<bool>("use_dvl_position_stddev", true);
 
     position_scale_x_ = declare_parameter<double>("position_scale_x", 1.0);
     position_scale_y_ = declare_parameter<double>("position_scale_y", 1.0);
     position_scale_z_ = declare_parameter<double>("position_scale_z", 1.0);
     max_twist_dt_ = declare_parameter<double>("max_twist_dt", 1.0);
-    max_position_norm_ = declare_parameter<double>("max_position_norm", 100.0);
-    max_position_speed_ = declare_parameter<double>("max_position_speed", 2.0);
+    max_position_norm_ = declare_parameter<double>("max_position_norm", 0.0);
+    max_position_speed_ = declare_parameter<double>("max_position_speed", 0.0);
 
     position_variance_xy_ = declare_parameter<double>("position_variance_xy", 0.25);
     position_variance_z_ = declare_parameter<double>("position_variance_z", 100.0);
@@ -46,8 +47,8 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Bridging %s -> %s with zero_position_on_start=%s",
-      input_topic_.c_str(), output_topic_.c_str(), zero_position_on_start_ ? "true" : "false");
+      "Bridging %s -> %s as raw DVL DR in frame %s, child %s",
+      input_topic_.c_str(), output_topic_.c_str(), frame_id_.c_str(), child_frame_id_.c_str());
   }
 
 private:
@@ -76,7 +77,8 @@ private:
       return;
     }
 
-    if (!have_origin_) {
+    const bool origin_needed = zero_position_on_start_ || zero_orientation_on_start_;
+    if (origin_needed && !have_origin_) {
       set_origin(*msg, true);
     }
 
@@ -134,8 +136,9 @@ private:
     out.pose.pose.orientation = tf2::toMsg(q);
 
     out.pose.covariance.fill(0.0);
-    out.pose.covariance[0] = position_variance_xy_;
-    out.pose.covariance[7] = position_variance_xy_;
+    const auto variance_xy = resolve_position_variance_xy(*msg);
+    out.pose.covariance[0] = variance_xy;
+    out.pose.covariance[7] = variance_xy;
     out.pose.covariance[14] = position_variance_z_;
     out.pose.covariance[21] = orientation_variance_;
     out.pose.covariance[28] = orientation_variance_;
@@ -236,6 +239,19 @@ private:
     return degrees * M_PI / 180.0;
   }
 
+  double resolve_position_variance_xy(const dvl_msgs::msg::DVLDR & msg) const
+  {
+    if (!use_dvl_position_stddev_) {
+      return position_variance_xy_;
+    }
+
+    const auto stddev = static_cast<double>(msg.pos_std);
+    if (!std::isfinite(stddev) || stddev <= 0.0) {
+      return position_variance_xy_;
+    }
+    return stddev * stddev;
+  }
+
   std::string input_topic_;
   std::string output_topic_;
   std::string frame_id_;
@@ -248,6 +264,7 @@ private:
   bool require_status_zero_;
   bool estimate_twist_;
   bool reset_origin_on_jump_;
+  bool use_dvl_position_stddev_;
 
   double position_scale_x_;
   double position_scale_y_;

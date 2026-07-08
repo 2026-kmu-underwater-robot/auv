@@ -25,6 +25,8 @@ public:
     min_valid_beams_ = declare_parameter<int>("min_valid_beams", 4);
     use_dvl_covariance_ = declare_parameter<bool>("use_dvl_covariance", true);
     require_valid_velocity_ = declare_parameter<bool>("require_valid_velocity", true);
+    reacquire_good_samples_ = declare_parameter<int>("reacquire_good_samples", 3);
+    reacquire_duration_s_ = declare_parameter<double>("reacquire_duration_s", 0.0);
 
     const auto sensor_qos = rclcpp::SensorDataQoS();
 
@@ -42,6 +44,10 @@ public:
       "DVL gates: min_var=%.4g max_var=%.4g cov_scale=%.3f max_fom=%.4g min_alt=%.3f min_beams=%d",
       min_linear_variance_, max_linear_variance_, covariance_scale_, max_fom_,
       min_altitude_, min_valid_beams_);
+    RCLCPP_INFO(
+      get_logger(),
+      "DVL reacquire gate: good_samples=%d duration=%.2fs",
+      reacquire_good_samples_, reacquire_duration_s_);
   }
 
 private:
@@ -51,9 +57,11 @@ private:
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
         "Skipping DVL sample marked invalid.");
+      reset_reacquisition();
       return;
     }
     if (!is_valid_measurement(*msg)) {
+      reset_reacquisition();
       return;
     }
 
@@ -90,12 +98,21 @@ private:
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
         "Skipping DVL sample with excessive covariance.");
+      reset_reacquisition();
       return;
     }
 
     cov[0] = sanitize_variance(cov[0]);
     cov[7] = sanitize_variance(cov[7]);
     cov[14] = sanitize_variance(cov[14]);
+
+    if (!is_reacquired()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Holding DVL twist during reacquire: %d/%d good samples.",
+        consecutive_good_samples_, reacquire_good_samples_);
+      return;
+    }
 
     publisher_->publish(out);
   }
@@ -161,6 +178,33 @@ private:
     return std::max(value, min_linear_variance_);
   }
 
+  void reset_reacquisition()
+  {
+    reacquired_ = false;
+    consecutive_good_samples_ = 0;
+    first_good_time_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
+  }
+
+  bool is_reacquired()
+  {
+    if (reacquire_good_samples_ <= 1 && reacquire_duration_s_ <= 0.0) {
+      reacquired_ = true;
+      return true;
+    }
+
+    const auto now = get_clock()->now();
+    if (consecutive_good_samples_ == 0) {
+      first_good_time_ = now;
+    }
+    consecutive_good_samples_++;
+
+    const bool samples_ok = consecutive_good_samples_ >= std::max(1, reacquire_good_samples_);
+    const bool duration_ok =
+      reacquire_duration_s_ <= 0.0 || (now - first_good_time_).seconds() >= reacquire_duration_s_;
+    reacquired_ = samples_ok && duration_ok;
+    return reacquired_;
+  }
+
   std::string input_topic_;
   std::string output_topic_;
   std::string output_frame_id_;
@@ -173,6 +217,11 @@ private:
   int min_valid_beams_;
   bool use_dvl_covariance_;
   bool require_valid_velocity_;
+  int reacquire_good_samples_;
+  double reacquire_duration_s_;
+  bool reacquired_{false};
+  int consecutive_good_samples_{0};
+  rclcpp::Time first_good_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Publisher<geometry_msgs::msg::TwistWithCovarianceStamped>::SharedPtr publisher_;
   rclcpp::Subscription<dvl_msgs::msg::DVL>::SharedPtr subscription_;
 };

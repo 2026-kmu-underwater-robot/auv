@@ -7,6 +7,7 @@
 #include <vector>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 
 class JoyToMavros : public rclcpp::Node {
 public:
@@ -30,20 +31,53 @@ public:
         // Client for set mode service
         set_mode_client_ = this->create_client<mavros_msgs::srv::SetMode>("/mavros/set_mode");
 
+        axis_deadzone_ = this->declare_parameter<double>("axis_deadzone", 0.08);
+        vertical_axis_deadzone_ = this->declare_parameter<double>("vertical_axis_deadzone", 0.10);
+        pwm_range_ = this->declare_parameter<double>("pwm_range", 300.0);
+        alt_hold_entry_neutral_sec_ =
+            this->declare_parameter<double>("alt_hold_entry_neutral_sec", 1.0);
+        alt_hold_post_entry_neutral_sec_ =
+            this->declare_parameter<double>("alt_hold_post_entry_neutral_sec", 0.3);
+
+        alt_hold_timer_ = this->create_wall_timer(
+            std::chrono::milliseconds(50),
+            std::bind(&JoyToMavros::handle_pending_alt_hold_request, this));
+
         RCLCPP_INFO(this->get_logger(), "Joy to Mavros node initialized.");
     }
 private:
+    static constexpr uint16_t NEUTRAL_PWM = 1500;
+    static constexpr int VERTICAL_CHANNEL_INDEX = 2;
+
     rclcpp::Publisher<mavros_msgs::msg::OverrideRCIn>::SharedPtr rc_pub_;
     rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;
     rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr arm_client_;
     rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr set_mode_client_;
+    rclcpp::TimerBase::SharedPtr alt_hold_timer_;
     sensor_msgs::msg::Joy::SharedPtr last_joy_msg_;
 
     bool first_msg_received_ = false;
     uint16_t led_pwm_;
+    double axis_deadzone_ = 0.08;
+    double vertical_axis_deadzone_ = 0.10;
+    double pwm_range_ = 300.0;
+    double alt_hold_entry_neutral_sec_ = 1.0;
+    double alt_hold_post_entry_neutral_sec_ = 0.3;
+    bool alt_hold_request_pending_ = false;
+    std::chrono::steady_clock::time_point alt_hold_mode_request_at_;
+    std::chrono::steady_clock::time_point alt_hold_neutral_until_;
 
-    uint16_t scale_axis_to_pwm(float axis_val) {
-        return static_cast<uint16_t>(1500 + axis_val * 300);
+    float apply_deadzone(float axis_val, double deadzone) const {
+        if (std::abs(axis_val) < deadzone) {
+            return 0.0f;
+        }
+        return axis_val;
+    }
+
+    uint16_t scale_axis_to_pwm(float axis_val, double deadzone) const {
+        const float filtered_axis = apply_deadzone(axis_val, deadzone);
+        const double pwm = static_cast<double>(NEUTRAL_PWM) + filtered_axis * pwm_range_;
+        return static_cast<uint16_t>(std::clamp(pwm, 1100.0, 1900.0));
     }
 
     bool hasButton(const sensor_msgs::msg::Joy::SharedPtr msg, std::size_t index) const {
@@ -65,6 +99,53 @@ private:
 
     float axisValue(const sensor_msgs::msg::Joy::SharedPtr msg, std::size_t index) const {
         return hasAxis(msg, index) ? msg->axes[index] : 0.0f;
+    }
+
+    void schedule_alt_hold_request() {
+        const auto now = std::chrono::steady_clock::now();
+        const auto duration = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(alt_hold_entry_neutral_sec_));
+        alt_hold_request_pending_ = true;
+        alt_hold_mode_request_at_ = now + duration;
+        alt_hold_neutral_until_ = alt_hold_mode_request_at_;
+        publish_neutral_vertical_override();
+        RCLCPP_INFO(
+            this->get_logger(),
+            "ALT_HOLD requested. Holding vertical RC neutral for %.2f s before mode change.",
+            alt_hold_entry_neutral_sec_);
+    }
+
+    void cancel_pending_alt_hold_request() {
+        alt_hold_request_pending_ = false;
+    }
+
+    void handle_pending_alt_hold_request() {
+        const auto now = std::chrono::steady_clock::now();
+        if (alt_hold_request_pending_ || now < alt_hold_neutral_until_) {
+            publish_neutral_vertical_override();
+        }
+        if (!alt_hold_request_pending_ || now < alt_hold_mode_request_at_) {
+            return;
+        }
+
+        alt_hold_request_pending_ = false;
+        const auto post_duration = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(alt_hold_post_entry_neutral_sec_));
+        alt_hold_neutral_until_ = now + post_duration;
+        send_set_mode_request("ALT_HOLD");
+    }
+
+    bool is_alt_hold_entry_neutral_active() const {
+        return std::chrono::steady_clock::now() < alt_hold_neutral_until_;
+    }
+
+    void publish_neutral_vertical_override() {
+        mavros_msgs::msg::OverrideRCIn rc_override_msg;
+        for (auto & channel : rc_override_msg.channels) {
+            channel = mavros_msgs::msg::OverrideRCIn::CHAN_NOCHANGE;
+        }
+        rc_override_msg.channels[VERTICAL_CHANNEL_INDEX] = NEUTRAL_PWM;
+        rc_pub_->publish(rc_override_msg);
     }
     
     void joyCallback(const sensor_msgs::msg::Joy::SharedPtr msg)
@@ -98,17 +179,19 @@ private:
 
 
         for (int i = 0; i < 18; i++) {
-            rc_override_msg.channels[i] = 1500; // 기본값 1500 (중립)
+            rc_override_msg.channels[i] = NEUTRAL_PWM; // 기본값 1500 (중립)
         }
 
 
-        rc_override_msg.channels[3] = scale_axis_to_pwm(-axisValue(msg, 2)); //yaw
+        rc_override_msg.channels[3] = scale_axis_to_pwm(-axisValue(msg, 2), axis_deadzone_); //yaw
 
-        rc_override_msg.channels[2] = scale_axis_to_pwm(axisValue(msg, 3)); //상승 하강
+        const float vertical_axis = is_alt_hold_entry_neutral_active() ? 0.0f : axisValue(msg, 3);
+        rc_override_msg.channels[VERTICAL_CHANNEL_INDEX] =
+            scale_axis_to_pwm(vertical_axis, vertical_axis_deadzone_); //상승 하강
 
-        rc_override_msg.channels[5] = scale_axis_to_pwm(-axisValue(msg, 0)); //lateral
+        rc_override_msg.channels[5] = scale_axis_to_pwm(-axisValue(msg, 0), axis_deadzone_); //lateral
 
-        rc_override_msg.channels[4] = scale_axis_to_pwm(axisValue(msg, 1)); //전진 후진
+        rc_override_msg.channels[4] = scale_axis_to_pwm(axisValue(msg, 1), axis_deadzone_); //전진 후진
 
         rc_override_msg.channels[8]= led_pwm_;
 
@@ -137,6 +220,11 @@ private:
         }
 
         if (!new_mode.empty()) {
+            if (new_mode == "ALT_HOLD") {
+                schedule_alt_hold_request();
+                return;
+            }
+            cancel_pending_alt_hold_request();
             send_set_mode_request(new_mode);
         }
     }

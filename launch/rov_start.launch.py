@@ -57,6 +57,9 @@ def generate_launch_description() -> LaunchDescription:
         # Core connections
         DeclareLaunchArgument("fcu_url", default_value="/dev/ttyACM0:57600"),
         DeclareLaunchArgument("mavros_launch_file", default_value=mavros_default),
+        DeclareLaunchArgument("configure_mavros_imu_rate", default_value="true"),
+        DeclareLaunchArgument("mavros_imu_rate_hz", default_value="50.0"),
+        DeclareLaunchArgument("mavros_raw_imu_rate_hz", default_value="50.0"),
         DeclareLaunchArgument("dronecan_python", default_value=dronecan_python_default),
         DeclareLaunchArgument("use_external_baro_bridge", default_value="false"),
         DeclareLaunchArgument(
@@ -111,21 +114,30 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("dvl_twist_max_fom", default_value="0.05"),
         DeclareLaunchArgument("dvl_twist_min_altitude", default_value="0.05"),
         DeclareLaunchArgument("dvl_twist_min_valid_beams", default_value="4"),
+        DeclareLaunchArgument("dvl_twist_reacquire_good_samples", default_value="3"),
+        DeclareLaunchArgument("dvl_twist_reacquire_duration", default_value="0.0"),
         DeclareLaunchArgument("use_dvl_position_odom", default_value="true"),
         DeclareLaunchArgument("dvl_position_odom_topic", default_value="/dvl/odometry"),
-        DeclareLaunchArgument("dvl_position_frame", default_value="odom"),
-        DeclareLaunchArgument("dvl_position_child_frame", default_value="base_link"),
-        DeclareLaunchArgument("dvl_position_zero_on_start", default_value="true"),
+        DeclareLaunchArgument("dvl_position_frame", default_value="dvl_odom"),
+        DeclareLaunchArgument("dvl_position_child_frame", default_value="dvl"),
+        DeclareLaunchArgument("dvl_position_zero_on_start", default_value="false"),
         DeclareLaunchArgument("dvl_position_zero_orientation_on_start", default_value="false"),
         DeclareLaunchArgument("dvl_position_orientation_in_degrees", default_value="true"),
+        DeclareLaunchArgument("dvl_position_estimate_twist", default_value="false"),
+        DeclareLaunchArgument("dvl_position_use_pos_std", default_value="true"),
         DeclareLaunchArgument("dvl_position_variance_xy", default_value="0.25"),
         DeclareLaunchArgument("dvl_position_variance_z", default_value="100.0"),
-        DeclareLaunchArgument("dvl_position_max_norm", default_value="100.0"),
-        DeclareLaunchArgument("dvl_position_max_speed", default_value="2.0"),
-        DeclareLaunchArgument("dvl_position_reset_origin_on_jump", default_value="true"),
+        DeclareLaunchArgument("dvl_position_max_norm", default_value="0.0"),
+        DeclareLaunchArgument("dvl_position_max_speed", default_value="0.0"),
+        DeclareLaunchArgument("dvl_position_reset_origin_on_jump", default_value="false"),
         DeclareLaunchArgument("pressure_topic", default_value="/mavros/imu/static_pressure"),
         DeclareLaunchArgument("pressure_input_mode", default_value="pressure_pa"),
         DeclareLaunchArgument("fluid_density", default_value="1000.0"),
+        DeclareLaunchArgument("joy_axis_deadzone", default_value="0.08"),
+        DeclareLaunchArgument("joy_vertical_axis_deadzone", default_value="0.10"),
+        DeclareLaunchArgument("joy_pwm_range", default_value="300.0"),
+        DeclareLaunchArgument("alt_hold_entry_neutral_sec", default_value="1.0"),
+        DeclareLaunchArgument("alt_hold_post_entry_neutral_sec", default_value="0.3"),
         DeclareLaunchArgument("use_buoy_control", default_value="false"),
         DeclareLaunchArgument("buoy_topic", default_value="/buoy"),
         DeclareLaunchArgument("buoy_arrival_radius", default_value="0.10"),
@@ -150,6 +162,8 @@ def generate_launch_description() -> LaunchDescription:
     dvl_twist_max_fom = LaunchConfiguration("dvl_twist_max_fom")
     dvl_twist_min_altitude = LaunchConfiguration("dvl_twist_min_altitude")
     dvl_twist_min_valid_beams = LaunchConfiguration("dvl_twist_min_valid_beams")
+    dvl_twist_reacquire_good_samples = LaunchConfiguration("dvl_twist_reacquire_good_samples")
+    dvl_twist_reacquire_duration = LaunchConfiguration("dvl_twist_reacquire_duration")
     use_dvl_position_odom = LaunchConfiguration("use_dvl_position_odom")
     dvl_position_odom_topic = LaunchConfiguration("dvl_position_odom_topic")
     dvl_position_frame = LaunchConfiguration("dvl_position_frame")
@@ -159,6 +173,8 @@ def generate_launch_description() -> LaunchDescription:
         "dvl_position_zero_orientation_on_start")
     dvl_position_orientation_in_degrees = LaunchConfiguration(
         "dvl_position_orientation_in_degrees")
+    dvl_position_estimate_twist = LaunchConfiguration("dvl_position_estimate_twist")
+    dvl_position_use_pos_std = LaunchConfiguration("dvl_position_use_pos_std")
     dvl_position_variance_xy = LaunchConfiguration("dvl_position_variance_xy")
     dvl_position_variance_z = LaunchConfiguration("dvl_position_variance_z")
     dvl_position_max_norm = LaunchConfiguration("dvl_position_max_norm")
@@ -168,7 +184,15 @@ def generate_launch_description() -> LaunchDescription:
     pressure_topic = LaunchConfiguration("pressure_topic")
     pressure_input_mode = LaunchConfiguration("pressure_input_mode")
     fluid_density = LaunchConfiguration("fluid_density")
+    joy_axis_deadzone = LaunchConfiguration("joy_axis_deadzone")
+    joy_vertical_axis_deadzone = LaunchConfiguration("joy_vertical_axis_deadzone")
+    joy_pwm_range = LaunchConfiguration("joy_pwm_range")
+    alt_hold_entry_neutral_sec = LaunchConfiguration("alt_hold_entry_neutral_sec")
+    alt_hold_post_entry_neutral_sec = LaunchConfiguration("alt_hold_post_entry_neutral_sec")
     mavros_launch_file = LaunchConfiguration("mavros_launch_file")
+    configure_mavros_imu_rate = LaunchConfiguration("configure_mavros_imu_rate")
+    mavros_imu_rate_hz = LaunchConfiguration("mavros_imu_rate_hz")
+    mavros_raw_imu_rate_hz = LaunchConfiguration("mavros_raw_imu_rate_hz")
     dronecan_python = LaunchConfiguration("dronecan_python")
     use_external_baro_bridge = LaunchConfiguration("use_external_baro_bridge")
     external_baro_connection_url = LaunchConfiguration("external_baro_connection_url")
@@ -224,6 +248,11 @@ def generate_launch_description() -> LaunchDescription:
             use_dvl_position_odom, "' == 'true'",
         ]))
     mavros_enabled = IfCondition(PythonExpression(["'", mavros_launch_file, "' != ''"]))
+    mavros_imu_rate_config_enabled = IfCondition(
+        PythonExpression([
+            "'", mavros_launch_file, "' != '' and '",
+            configure_mavros_imu_rate, "' == 'true'",
+        ]))
     buoy_control_enabled = IfCondition(PythonExpression(["'", use_buoy_control, "' == 'true'"]))
 
     launch_actions = [
@@ -263,6 +292,21 @@ def generate_launch_description() -> LaunchDescription:
             AnyLaunchDescriptionSource(mavros_launch_file),
             launch_arguments={"fcu_url": fcu_url}.items(),
             condition=mavros_enabled,
+        ),
+        Node(
+            package="hit25_auv_ros2",
+            executable="mavros_imu_rate_config.py",
+            name="mavros_imu_rate_config",
+            output="screen",
+            parameters=[
+                {
+                    "attitude_rate_hz": ParameterValue(
+                        mavros_imu_rate_hz, value_type=float),
+                    "raw_imu_rate_hz": ParameterValue(
+                        mavros_raw_imu_rate_hz, value_type=float),
+                }
+            ],
+            condition=mavros_imu_rate_config_enabled,
         ),
         # 3) Vehicle and sensor static TFs
         _static_tf_node(
@@ -316,6 +360,18 @@ def generate_launch_description() -> LaunchDescription:
             name="joy2mavros",
             output="screen",
             respawn=True,
+            parameters=[
+                {
+                    "axis_deadzone": ParameterValue(joy_axis_deadzone, value_type=float),
+                    "vertical_axis_deadzone": ParameterValue(
+                        joy_vertical_axis_deadzone, value_type=float),
+                    "pwm_range": ParameterValue(joy_pwm_range, value_type=float),
+                    "alt_hold_entry_neutral_sec": ParameterValue(
+                        alt_hold_entry_neutral_sec, value_type=float),
+                    "alt_hold_post_entry_neutral_sec": ParameterValue(
+                        alt_hold_post_entry_neutral_sec, value_type=float),
+                }
+            ],
         ),
         Node(
             package="hit25_auv_ros2",
@@ -345,6 +401,10 @@ def generate_launch_description() -> LaunchDescription:
                         dvl_twist_min_altitude, value_type=float),
                     "min_valid_beams": ParameterValue(
                         dvl_twist_min_valid_beams, value_type=int),
+                    "reacquire_good_samples": ParameterValue(
+                        dvl_twist_reacquire_good_samples, value_type=int),
+                    "reacquire_duration_s": ParameterValue(
+                        dvl_twist_reacquire_duration, value_type=float),
                 },
             ],
             condition=localization_enabled,
@@ -366,6 +426,10 @@ def generate_launch_description() -> LaunchDescription:
                         dvl_position_zero_orientation_on_start, value_type=bool),
                     "orientation_in_degrees": ParameterValue(
                         dvl_position_orientation_in_degrees, value_type=bool),
+                    "estimate_twist": ParameterValue(
+                        dvl_position_estimate_twist, value_type=bool),
+                    "use_dvl_position_stddev": ParameterValue(
+                        dvl_position_use_pos_std, value_type=bool),
                     "position_variance_xy": ParameterValue(
                         dvl_position_variance_xy, value_type=float),
                     "position_variance_z": ParameterValue(
