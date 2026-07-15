@@ -136,6 +136,15 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("joy_axis_deadzone", default_value="0.08"),
         DeclareLaunchArgument("joy_vertical_axis_deadzone", default_value="0.10"),
         DeclareLaunchArgument("joy_pwm_range", default_value="300.0"),
+        DeclareLaunchArgument(
+            "joy_rc_output_topic",
+            default_value="/mavros/rc/override",
+            description=(
+                "joy2mavros output. Use /control/joystick/rc_override when an "
+                "RC mux owns /mavros/rc/override."
+            ),
+        ),
+        DeclareLaunchArgument("joy_release_when_idle", default_value="false"),
         DeclareLaunchArgument("alt_hold_entry_neutral_sec", default_value="1.0"),
         DeclareLaunchArgument("alt_hold_post_entry_neutral_sec", default_value="0.3"),
         DeclareLaunchArgument("use_buoy_control", default_value="false"),
@@ -187,6 +196,8 @@ def generate_launch_description() -> LaunchDescription:
     joy_axis_deadzone = LaunchConfiguration("joy_axis_deadzone")
     joy_vertical_axis_deadzone = LaunchConfiguration("joy_vertical_axis_deadzone")
     joy_pwm_range = LaunchConfiguration("joy_pwm_range")
+    joy_rc_output_topic = LaunchConfiguration("joy_rc_output_topic")
+    joy_release_when_idle = LaunchConfiguration("joy_release_when_idle")
     alt_hold_entry_neutral_sec = LaunchConfiguration("alt_hold_entry_neutral_sec")
     alt_hold_post_entry_neutral_sec = LaunchConfiguration("alt_hold_post_entry_neutral_sec")
     mavros_launch_file = LaunchConfiguration("mavros_launch_file")
@@ -366,6 +377,9 @@ def generate_launch_description() -> LaunchDescription:
                     "vertical_axis_deadzone": ParameterValue(
                         joy_vertical_axis_deadzone, value_type=float),
                     "pwm_range": ParameterValue(joy_pwm_range, value_type=float),
+                    "rc_output_topic": joy_rc_output_topic,
+                    "release_when_idle": ParameterValue(
+                        joy_release_when_idle, value_type=bool),
                     "alt_hold_entry_neutral_sec": ParameterValue(
                         alt_hold_entry_neutral_sec, value_type=float),
                     "alt_hold_post_entry_neutral_sec": ParameterValue(

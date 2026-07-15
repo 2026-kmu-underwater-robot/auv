@@ -41,6 +41,17 @@ ament_target_dependencies(tf_broadcaster rclcpp geometry_msgs tf2 tf2_ros)
 add_executable(joy2mavros src/joy2mavros.cpp)
 ament_target_dependencies(joy2mavros rclcpp sensor_msgs mavros_msgs)
 
+if(BUILD_TESTING)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(
+    NAME joy2mavros_mux_input
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_joy2mavros_mux_input.py
+      --executable $<TARGET_FILE:joy2mavros>
+  )
+  set_tests_properties(joy2mavros_mux_input PROPERTIES TIMEOUT 15)
+endif()
+
 add_executable(odom2mavros src/odom2mavros.cpp)
 ament_target_dependencies(odom2mavros rclcpp nav_msgs geometry_msgs tf2 tf2_geometry_msgs)
 
