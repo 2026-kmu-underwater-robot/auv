@@ -14,9 +14,14 @@ public:
     JoyToMavros()
     : Node("joy_to_mavros_node"), led_pwm_(1500)
     {
+        const auto rc_output_topic = this->declare_parameter<std::string>(
+            "rc_output_topic", "/mavros/rc/override"
+        );
+        release_when_idle_ = this->declare_parameter<bool>("release_when_idle", false);
+
         // Publisher for RC override
         rc_pub_ = this->create_publisher<mavros_msgs::msg::OverrideRCIn>(
-            "/mavros/rc/override", rclcpp::QoS(10)
+            rc_output_topic, rclcpp::QoS(10)
         );
 
         // Subscriber for joystick inputs
@@ -43,7 +48,12 @@ public:
             std::chrono::milliseconds(50),
             std::bind(&JoyToMavros::handle_pending_alt_hold_request, this));
 
-        RCLCPP_INFO(this->get_logger(), "Joy to Mavros node initialized.");
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Joy to Mavros initialized. RC output=%s release_when_idle=%s "
+            "deadzone=%.2f vertical_deadzone=%.2f",
+            rc_output_topic.c_str(), release_when_idle_ ? "true" : "false",
+            axis_deadzone_, vertical_axis_deadzone_);
     }
 private:
     static constexpr uint16_t NEUTRAL_PWM = 1500;
@@ -61,6 +71,7 @@ private:
     double axis_deadzone_ = 0.08;
     double vertical_axis_deadzone_ = 0.10;
     double pwm_range_ = 300.0;
+    bool release_when_idle_ = false;
     double alt_hold_entry_neutral_sec_ = 1.0;
     double alt_hold_post_entry_neutral_sec_ = 0.3;
     bool alt_hold_request_pending_ = false;
@@ -177,6 +188,22 @@ private:
 
         mavros_msgs::msg::OverrideRCIn rc_override_msg;
 
+        const bool axis_motion_requested =
+            std::abs(axisValue(msg, 0)) >= axis_deadzone_ ||
+            std::abs(axisValue(msg, 1)) >= axis_deadzone_ ||
+            std::abs(axisValue(msg, 2)) >= axis_deadzone_ ||
+            std::abs(axisValue(msg, 3)) >= vertical_axis_deadzone_;
+        if (
+            release_when_idle_ && !axis_motion_requested &&
+            !is_alt_hold_entry_neutral_active())
+        {
+            std::fill(
+                rc_override_msg.channels.begin(), rc_override_msg.channels.end(),
+                mavros_msgs::msg::OverrideRCIn::CHAN_RELEASE);
+            rc_pub_->publish(rc_override_msg);
+            last_joy_msg_ = msg;
+            return;
+        }
 
         for (int i = 0; i < 18; i++) {
             rc_override_msg.channels[i] = NEUTRAL_PWM; // 기본값 1500 (중립)
