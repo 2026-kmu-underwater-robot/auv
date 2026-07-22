@@ -157,7 +157,8 @@ def main(args=None):
         success = node.configure()
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
     return 0 if success else 1
 

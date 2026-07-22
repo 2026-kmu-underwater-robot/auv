@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(hit25_auv_ros2)
+project(auv)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -15,7 +15,7 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(mavros_msgs REQUIRED)
-find_package(dvl_msgs REQUIRED)
+find_package(auv_dvl_a50_msg REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
@@ -48,13 +48,13 @@ add_executable(vfr2atm_pressure src/vfr2atm_pressure.cpp)
 ament_target_dependencies(vfr2atm_pressure rclcpp mavros_msgs sensor_msgs)
 
 add_executable(dvl_to_twist_bridge src/dvl_to_twist_bridge.cpp)
-ament_target_dependencies(dvl_to_twist_bridge rclcpp geometry_msgs dvl_msgs)
+ament_target_dependencies(dvl_to_twist_bridge rclcpp geometry_msgs auv_dvl_a50_msg)
 
 add_executable(dvl_position_to_odom_bridge src/dvl_position_to_odom_bridge.cpp)
 ament_target_dependencies(
   dvl_position_to_odom_bridge
   rclcpp
-  dvl_msgs
+  auv_dvl_a50_msg
   nav_msgs
   tf2
   tf2_geometry_msgs

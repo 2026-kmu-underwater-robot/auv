@@ -8,6 +8,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.actions import IncludeLaunchDescription
 from launch.actions import LogInfo
+from launch.actions import SetEnvironmentVariable
 from launch.conditions import IfCondition
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -21,6 +22,22 @@ def _default_launch_file(package_name: str, relative_path: str) -> str:
         return os.path.join(get_package_share_directory(package_name), relative_path)
     except PackageNotFoundError:
         return ""
+
+
+def _geographiclib_geoid_path() -> str:
+    configured = os.environ.get("GEOGRAPHICLIB_GEOID_PATH", "")
+    if configured:
+        return configured
+
+    candidates = [
+        os.path.expanduser("~/.local/share/GeographicLib/geoids"),
+        "/usr/share/GeographicLib/geoids",
+        "/usr/local/share/GeographicLib/geoids",
+    ]
+    for candidate in candidates:
+        if os.path.isfile(os.path.join(candidate, "egm96-5.pgm")):
+            return candidate
+    return ""
 
 
 def _static_tf_node(name, parent_frame, child_frame, x, y, z, roll, pitch, yaw) -> Node:
@@ -44,16 +61,17 @@ def _static_tf_node(name, parent_frame, child_frame, x, y, z, roll, pitch, yaw) 
 
 def generate_launch_description() -> LaunchDescription:
     dvl_default = _default_launch_file(
-        "dvl_a50", os.path.join("launch", "dvl_a50.launch.py")
+        "auv_dvl_a50", os.path.join("launch", "dvl_a50.launch.py")
     )
     mavros_default = _default_launch_file(
-        "hit25_auv_ros2", os.path.join("launch", "mavros_auv.launch")
+        "auv", os.path.join("launch", "mavros_auv.launch")
     )
     localization_default = os.path.join(
-        get_package_share_directory("hit25_auv_ros2"), "config", "auv_ekf.yaml")
+        get_package_share_directory("auv"), "config", "auv_ekf.yaml")
     dronecan_python_default = os.path.expanduser("~/miniconda3/envs/auv_ros2/bin/python")
     if not os.path.exists(dronecan_python_default):
         dronecan_python_default = "python3"
+    geoid_path = _geographiclib_geoid_path()
 
     launch_arguments = [
         # Core connections
@@ -259,6 +277,18 @@ def generate_launch_description() -> LaunchDescription:
         ]))
     buoy_control_enabled = IfCondition(PythonExpression(["'", use_buoy_control, "' == 'true'"]))
 
+    environment_actions = []
+    if geoid_path:
+        environment_actions.extend(
+            [
+                SetEnvironmentVariable(
+                    name="GEOGRAPHICLIB_GEOID_PATH",
+                    value=geoid_path,
+                ),
+                LogInfo(msg=f"[rov_start] GeographicLib geoid path: {geoid_path}"),
+            ]
+        )
+
     launch_actions = [
         # LogInfo(
         #     condition=IfCondition(
@@ -298,7 +328,7 @@ def generate_launch_description() -> LaunchDescription:
             condition=mavros_enabled,
         ),
         Node(
-            package="hit25_auv_ros2",
+            package="auv",
             executable="mavros_imu_rate_config.py",
             name="mavros_imu_rate_config",
             output="screen",
@@ -361,7 +391,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         # 4) AUV nodes in this package
         Node(
-            package="hit25_auv_ros2",
+            package="auv",
             executable="joy2mavros",
             name="joy2mavros",
             output="screen",
@@ -380,7 +410,7 @@ def generate_launch_description() -> LaunchDescription:
             ],
         ),
         Node(
-            package="hit25_auv_ros2",
+            package="auv",
             executable="dvl_to_twist_bridge",
             name="dvl_to_twist_bridge",
             output="screen",
@@ -408,7 +438,7 @@ def generate_launch_description() -> LaunchDescription:
             condition=localization_enabled,
         ),
         Node(
-            package="hit25_auv_ros2",
+            package="auv",
             executable="dvl_position_to_odom_bridge",
             name="dvl_position_to_odom_bridge",
             output="screen",
@@ -443,7 +473,7 @@ def generate_launch_description() -> LaunchDescription:
             condition=dvl_position_odom_enabled,
         ),
         Node(
-            package="hit25_auv_ros2",
+            package="auv",
             executable="pressure_to_depth_pose",
             name="pressure_to_depth_pose",
             output="screen",
@@ -466,14 +496,14 @@ def generate_launch_description() -> LaunchDescription:
             condition=localization_enabled,
         ),
         Node(
-            package="hit25_auv_ros2",
+            package="auv",
             executable="odom2mavros",
             name="odom2mavros",
             output="screen",
             respawn=True,
         ),
         Node(
-            package="hit25_auv_ros2",
+            package="auv",
             executable="buoy_position_control",
             name="buoy_position_control",
             output="screen",
@@ -490,7 +520,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         # 5) DroneCAN battery bridge
         Node(
-            package="hit25_auv_ros2",
+            package="auv",
             executable="dronecan2mavros_battery_v2.py",
             name="dronecan2mavros_battery",
             output="screen",
@@ -507,4 +537,4 @@ def generate_launch_description() -> LaunchDescription:
         ),
     ]
 
-    return LaunchDescription(launch_arguments + launch_actions)
+    return LaunchDescription(launch_arguments + environment_actions + launch_actions)
