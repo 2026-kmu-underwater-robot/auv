@@ -51,7 +51,7 @@ def _run(cmd):
 
 def _iface_exists(name: str) -> bool:   #장치 연결 확인
     """
-    CAN 인터페이스(can0 등)가 시스템에 존재하는지 확인.
+    CAN 인터페이스(can1 등)가 시스템에 존재하는지 확인.
     ip -br link 출력에서 이름 검색.
     """
     out = _run(["/sbin/ip", "-br", "link"]).stdout
@@ -118,7 +118,7 @@ class Bridge(Node):
         super().__init__("dronecan_to_mavros_battery")
 
         # ── ROS2 파라미터 (ROS1과 동일 기본값) ─────────────────────────────────
-        self.declare_parameter("can_interface", "can0")
+        self.declare_parameter("can_interface", "can1")
         self.declare_parameter("local_node_id", 127)
         self.declare_parameter("target_node_id", 125)  # Powermodule 기본 Node ID
 
