@@ -78,9 +78,14 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("fcu_url", default_value="/dev/ttyACM0:57600"),
         DeclareLaunchArgument("mavros_launch_file", default_value=mavros_default),
         DeclareLaunchArgument("configure_mavros_imu_rate", default_value="true"),
+        DeclareLaunchArgument("configure_mavros_ekf_origin", default_value="true"),
         DeclareLaunchArgument("mavros_imu_rate_hz", default_value="50.0"),
         DeclareLaunchArgument("mavros_raw_imu_rate_hz", default_value="50.0"),
         DeclareLaunchArgument("mavros_baro_rate_hz", default_value="10.0"),
+        DeclareLaunchArgument("mavros_local_position_rate_hz", default_value="20.0"),
+        DeclareLaunchArgument("ekf_origin_latitude", default_value="37.0"),
+        DeclareLaunchArgument("ekf_origin_longitude", default_value="127.0"),
+        DeclareLaunchArgument("ekf_origin_altitude", default_value="0.0"),
         DeclareLaunchArgument("dronecan_python", default_value=dronecan_python_default),
         DeclareLaunchArgument("use_external_baro_bridge", default_value="false"),
         DeclareLaunchArgument(
@@ -94,16 +99,16 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("depth_frame", default_value="depth_link"),
         DeclareLaunchArgument("imu_frame", default_value="imu_link"),
         # base_link -> fcu_link (FCU/IMU) static TF
-        DeclareLaunchArgument("base_to_fcu_x", default_value="0.11"),
-        DeclareLaunchArgument("base_to_fcu_y", default_value="-0.00034"),
-        DeclareLaunchArgument("base_to_fcu_z", default_value="0.092"),
+        DeclareLaunchArgument("base_to_fcu_x", default_value="0.09135"),
+        DeclareLaunchArgument("base_to_fcu_y", default_value="0.0"),
+        DeclareLaunchArgument("base_to_fcu_z", default_value="0.08541"),
         DeclareLaunchArgument("base_to_fcu_roll", default_value="0.0"),
         DeclareLaunchArgument("base_to_fcu_pitch", default_value="0.0"),
         DeclareLaunchArgument("base_to_fcu_yaw", default_value="0.0"),
         # base_link -> DVL static TF
-        DeclareLaunchArgument("dvl_x", default_value="-0.03196"),
+        DeclareLaunchArgument("dvl_x", default_value="-0.00488"),
         DeclareLaunchArgument("dvl_y", default_value="0.0"),
-        DeclareLaunchArgument("dvl_z", default_value="-0.097"),
+        DeclareLaunchArgument("dvl_z", default_value="-0.03910"),
         DeclareLaunchArgument("dvl_roll", default_value="3.141592653589793"),
         DeclareLaunchArgument("dvl_pitch", default_value="0.0"),
         DeclareLaunchArgument("dvl_yaw", default_value="0.0"),
@@ -159,6 +164,23 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("joy_pwm_range", default_value="300.0"),
         DeclareLaunchArgument("alt_hold_entry_neutral_sec", default_value="1.0"),
         DeclareLaunchArgument("alt_hold_post_entry_neutral_sec", default_value="0.3"),
+        DeclareLaunchArgument("use_guided_navigation", default_value="true"),
+        DeclareLaunchArgument("guided_goal_topic", default_value="/guided/goal"),
+        DeclareLaunchArgument("guided_arrival_radius", default_value="0.20"),
+        DeclareLaunchArgument("guided_arrival_speed", default_value="0.10"),
+        DeclareLaunchArgument("guided_arrival_settle_time", default_value="1.0"),
+        DeclareLaunchArgument(
+            "guided_arrival_yaw_tolerance_rad", default_value="0.1745329252"),
+        DeclareLaunchArgument("guided_align_heading_before_move", default_value="true"),
+        DeclareLaunchArgument("guided_heading_tolerance_rad", default_value="0.0872664626"),
+        DeclareLaunchArgument("guided_heading_settle_time", default_value="0.5"),
+        DeclareLaunchArgument("guided_heading_timeout", default_value="5.0"),
+        DeclareLaunchArgument(
+            "guided_heading_update_min_distance", default_value="0.20"),
+        DeclareLaunchArgument("guided_max_goal_distance", default_value="20.0"),
+        DeclareLaunchArgument("guided_min_z", default_value="-50.0"),
+        DeclareLaunchArgument("guided_max_z", default_value="1.0"),
+        DeclareLaunchArgument("guided_restore_mode", default_value="true"),
         DeclareLaunchArgument("use_buoy_control", default_value="false"),
         DeclareLaunchArgument("buoy_topic", default_value="/buoy"),
         DeclareLaunchArgument("buoy_arrival_radius", default_value="0.10"),
@@ -210,11 +232,37 @@ def generate_launch_description() -> LaunchDescription:
     joy_pwm_range = LaunchConfiguration("joy_pwm_range")
     alt_hold_entry_neutral_sec = LaunchConfiguration("alt_hold_entry_neutral_sec")
     alt_hold_post_entry_neutral_sec = LaunchConfiguration("alt_hold_post_entry_neutral_sec")
+    use_guided_navigation = LaunchConfiguration("use_guided_navigation")
+    guided_goal_topic = LaunchConfiguration("guided_goal_topic")
+    guided_arrival_radius = LaunchConfiguration("guided_arrival_radius")
+    guided_arrival_speed = LaunchConfiguration("guided_arrival_speed")
+    guided_arrival_settle_time = LaunchConfiguration("guided_arrival_settle_time")
+    guided_arrival_yaw_tolerance_rad = LaunchConfiguration(
+        "guided_arrival_yaw_tolerance_rad")
+    guided_align_heading_before_move = LaunchConfiguration(
+        "guided_align_heading_before_move")
+    guided_heading_tolerance_rad = LaunchConfiguration(
+        "guided_heading_tolerance_rad")
+    guided_heading_settle_time = LaunchConfiguration(
+        "guided_heading_settle_time")
+    guided_heading_timeout = LaunchConfiguration("guided_heading_timeout")
+    guided_heading_update_min_distance = LaunchConfiguration(
+        "guided_heading_update_min_distance")
+    guided_max_goal_distance = LaunchConfiguration("guided_max_goal_distance")
+    guided_min_z = LaunchConfiguration("guided_min_z")
+    guided_max_z = LaunchConfiguration("guided_max_z")
+    guided_restore_mode = LaunchConfiguration("guided_restore_mode")
     mavros_launch_file = LaunchConfiguration("mavros_launch_file")
     configure_mavros_imu_rate = LaunchConfiguration("configure_mavros_imu_rate")
+    configure_mavros_ekf_origin = LaunchConfiguration("configure_mavros_ekf_origin")
     mavros_imu_rate_hz = LaunchConfiguration("mavros_imu_rate_hz")
     mavros_raw_imu_rate_hz = LaunchConfiguration("mavros_raw_imu_rate_hz")
     mavros_baro_rate_hz = LaunchConfiguration("mavros_baro_rate_hz")
+    mavros_local_position_rate_hz = LaunchConfiguration(
+        "mavros_local_position_rate_hz")
+    ekf_origin_latitude = LaunchConfiguration("ekf_origin_latitude")
+    ekf_origin_longitude = LaunchConfiguration("ekf_origin_longitude")
+    ekf_origin_altitude = LaunchConfiguration("ekf_origin_altitude")
     dronecan_python = LaunchConfiguration("dronecan_python")
     use_external_baro_bridge = LaunchConfiguration("use_external_baro_bridge")
     external_baro_connection_url = LaunchConfiguration("external_baro_connection_url")
@@ -274,6 +322,18 @@ def generate_launch_description() -> LaunchDescription:
         PythonExpression([
             "'", mavros_launch_file, "' != '' and '",
             configure_mavros_imu_rate, "' == 'true'",
+        ]))
+    mavros_ekf_origin_config_enabled = IfCondition(
+        PythonExpression([
+            "'", mavros_launch_file, "' != '' and '",
+            configure_mavros_ekf_origin, "' == 'true'",
+        ]))
+    guided_navigation_enabled = IfCondition(
+        PythonExpression([
+            "'", use_guided_navigation, "' == 'true' and '",
+            use_localization, "' == 'true' and '",
+            use_buoy_control, "' != 'true' and '",
+            mavros_launch_file, "' != ''",
         ]))
     buoy_control_enabled = IfCondition(PythonExpression(["'", use_buoy_control, "' == 'true'"]))
 
@@ -340,9 +400,30 @@ def generate_launch_description() -> LaunchDescription:
                         mavros_raw_imu_rate_hz, value_type=float),
                     "baro_rate_hz": ParameterValue(
                         mavros_baro_rate_hz, value_type=float),
+                    "local_position_rate_hz": ParameterValue(
+                        mavros_local_position_rate_hz, value_type=float),
                 }
             ],
             condition=mavros_imu_rate_config_enabled,
+        ),
+        Node(
+            package="auv",
+            executable="mavros_ekf_origin_config.py",
+            name="mavros_ekf_origin_config",
+            output="screen",
+            parameters=[
+                {
+                    "latitude": ParameterValue(
+                        ekf_origin_latitude, value_type=float),
+                    "longitude": ParameterValue(
+                        ekf_origin_longitude, value_type=float),
+                    "altitude": ParameterValue(
+                        ekf_origin_altitude, value_type=float),
+                    "require_disarmed": True,
+                    "set_home": False,
+                }
+            ],
+            condition=mavros_ekf_origin_config_enabled,
         ),
         # 3) Vehicle and sensor static TFs
         _static_tf_node(
@@ -498,9 +579,45 @@ def generate_launch_description() -> LaunchDescription:
         Node(
             package="auv",
             executable="odom2mavros",
-            name="odom2mavros",
+            name="external_nav_odometry_gateway",
             output="screen",
             respawn=True,
+            condition=localization_enabled,
+        ),
+        Node(
+            package="auv",
+            executable="guided_navigation",
+            name="guided_navigation",
+            output="screen",
+            respawn=True,
+            parameters=[
+                {"goal_topic": guided_goal_topic},
+                {"arrival_radius_m": ParameterValue(
+                    guided_arrival_radius, value_type=float)},
+                {"arrival_speed_mps": ParameterValue(
+                    guided_arrival_speed, value_type=float)},
+                {"arrival_settle_time_s": ParameterValue(
+                    guided_arrival_settle_time, value_type=float)},
+                {"arrival_yaw_tolerance_rad": ParameterValue(
+                    guided_arrival_yaw_tolerance_rad, value_type=float)},
+                {"align_heading_before_move": ParameterValue(
+                    guided_align_heading_before_move, value_type=bool)},
+                {"heading_tolerance_rad": ParameterValue(
+                    guided_heading_tolerance_rad, value_type=float)},
+                {"heading_settle_time_s": ParameterValue(
+                    guided_heading_settle_time, value_type=float)},
+                {"heading_timeout_s": ParameterValue(
+                    guided_heading_timeout, value_type=float)},
+                {"heading_update_min_distance_m": ParameterValue(
+                    guided_heading_update_min_distance, value_type=float)},
+                {"max_goal_distance_m": ParameterValue(
+                    guided_max_goal_distance, value_type=float)},
+                {"min_goal_z_m": ParameterValue(guided_min_z, value_type=float)},
+                {"max_goal_z_m": ParameterValue(guided_max_z, value_type=float)},
+                {"restore_guided_mode": ParameterValue(
+                    guided_restore_mode, value_type=bool)},
+            ],
+            condition=guided_navigation_enabled,
         ),
         Node(
             package="auv",
