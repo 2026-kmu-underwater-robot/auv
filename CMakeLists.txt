@@ -41,7 +41,7 @@ add_executable(tf_broadcaster src/tf_broadcaster.cpp)
 ament_target_dependencies(tf_broadcaster rclcpp geometry_msgs tf2 tf2_ros)
 
 add_executable(joy2mavros src/joy2mavros.cpp)
-ament_target_dependencies(joy2mavros rclcpp sensor_msgs mavros_msgs)
+ament_target_dependencies(joy2mavros rclcpp sensor_msgs std_msgs mavros_msgs)
 
 add_executable(odom2mavros src/odom2mavros.cpp)
 target_compile_features(odom2mavros PUBLIC cxx_std_17)

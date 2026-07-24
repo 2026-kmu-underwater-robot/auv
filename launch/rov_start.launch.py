@@ -166,6 +166,12 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("alt_hold_post_entry_neutral_sec", default_value="0.3"),
         DeclareLaunchArgument("use_guided_navigation", default_value="true"),
         DeclareLaunchArgument("guided_goal_topic", default_value="/guided/goal"),
+        DeclareLaunchArgument("guided_waypoint_topic", default_value="/waypoint"),
+        DeclareLaunchArgument(
+            "guided_waypoint_enable_topic",
+            default_value="/guided/waypoint_enable"),
+        DeclareLaunchArgument("guided_waypoint_update_epsilon", default_value="0.02"),
+        DeclareLaunchArgument("guided_waypoint_cache_timeout", default_value="1.0"),
         DeclareLaunchArgument("guided_arrival_radius", default_value="0.20"),
         DeclareLaunchArgument("guided_arrival_speed", default_value="0.10"),
         DeclareLaunchArgument("guided_arrival_settle_time", default_value="1.0"),
@@ -234,6 +240,13 @@ def generate_launch_description() -> LaunchDescription:
     alt_hold_post_entry_neutral_sec = LaunchConfiguration("alt_hold_post_entry_neutral_sec")
     use_guided_navigation = LaunchConfiguration("use_guided_navigation")
     guided_goal_topic = LaunchConfiguration("guided_goal_topic")
+    guided_waypoint_topic = LaunchConfiguration("guided_waypoint_topic")
+    guided_waypoint_enable_topic = LaunchConfiguration(
+        "guided_waypoint_enable_topic")
+    guided_waypoint_update_epsilon = LaunchConfiguration(
+        "guided_waypoint_update_epsilon")
+    guided_waypoint_cache_timeout = LaunchConfiguration(
+        "guided_waypoint_cache_timeout")
     guided_arrival_radius = LaunchConfiguration("guided_arrival_radius")
     guided_arrival_speed = LaunchConfiguration("guided_arrival_speed")
     guided_arrival_settle_time = LaunchConfiguration("guided_arrival_settle_time")
@@ -592,6 +605,12 @@ def generate_launch_description() -> LaunchDescription:
             respawn=True,
             parameters=[
                 {"goal_topic": guided_goal_topic},
+                {"waypoint_topic": guided_waypoint_topic},
+                {"waypoint_enable_topic": guided_waypoint_enable_topic},
+                {"waypoint_update_epsilon_m": ParameterValue(
+                    guided_waypoint_update_epsilon, value_type=float)},
+                {"waypoint_cache_timeout_s": ParameterValue(
+                    guided_waypoint_cache_timeout, value_type=float)},
                 {"arrival_radius_m": ParameterValue(
                     guided_arrival_radius, value_type=float)},
                 {"arrival_speed_mps": ParameterValue(

@@ -99,6 +99,9 @@ public:
   : Node("guided_navigation")
   {
     goal_topic_ = declare_parameter<std::string>("goal_topic", "/guided/goal");
+    waypoint_topic_ = declare_parameter<std::string>("waypoint_topic", "/waypoint");
+    waypoint_enable_topic_ = declare_parameter<std::string>(
+      "waypoint_enable_topic", "/guided/waypoint_enable");
     cancel_topic_ = declare_parameter<std::string>("cancel_topic", "/guided/cancel");
     local_position_topic_ = declare_parameter<std::string>(
       "local_position_topic", "/mavros/local_position/odom");
@@ -148,6 +151,10 @@ public:
     max_goal_distance_m_ = declare_parameter<double>("max_goal_distance_m", 20.0);
     min_goal_z_m_ = declare_parameter<double>("min_goal_z_m", -50.0);
     max_goal_z_m_ = declare_parameter<double>("max_goal_z_m", 1.0);
+    waypoint_update_epsilon_m_ = declare_parameter<double>(
+      "waypoint_update_epsilon_m", 0.02);
+    waypoint_cache_timeout_s_ = declare_parameter<double>(
+      "waypoint_cache_timeout_s", 1.0);
     restore_guided_mode_ = declare_parameter<bool>("restore_guided_mode", true);
     start_frame_require_disarmed_ = declare_parameter<bool>(
       "start_frame_require_disarmed", true);
@@ -168,6 +175,8 @@ public:
     heading_timeout_s_ = std::max(heading_timeout_s_, 0.0);
     heading_update_min_distance_m_ = std::max(
       heading_update_min_distance_m_, 0.01);
+    waypoint_update_epsilon_m_ = std::max(waypoint_update_epsilon_m_, 0.001);
+    waypoint_cache_timeout_s_ = std::max(waypoint_cache_timeout_s_, 0.0);
 
     auto reliable_qos = rclcpp::QoS(10).reliable();
     auto sensor_qos = rclcpp::SensorDataQoS();
@@ -176,6 +185,14 @@ public:
     goal_sub_ = create_subscription<auv_msg::msg::AuvSetpoint>(
       goal_topic_, reliable_qos,
       std::bind(&GuidedNavigationNode::goalCallback, this, std::placeholders::_1));
+    waypoint_sub_ = create_subscription<mavros_msgs::msg::PositionTarget>(
+      waypoint_topic_, reliable_qos,
+      std::bind(&GuidedNavigationNode::waypointCallback, this, std::placeholders::_1));
+    waypoint_enable_sub_ = create_subscription<std_msgs::msg::Bool>(
+      waypoint_enable_topic_, reliable_qos,
+      std::bind(
+        &GuidedNavigationNode::waypointEnableCallback,
+        this, std::placeholders::_1));
     cancel_sub_ = create_subscription<std_msgs::msg::Empty>(
       cancel_topic_, reliable_qos,
       std::bind(&GuidedNavigationNode::cancelCallback, this, std::placeholders::_1));
@@ -217,16 +234,18 @@ public:
     arrival_started_at_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
     heading_aligned_at_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
     last_progress_status_at_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
+    last_waypoint_rx_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
 
     publishArrived(false);
     publishMissionStatus(auv_msg::msg::MissionStatus::READY);
-    setStatus("IDLE: waiting for an AuvSetpoint goal");
+    setStatus("IDLE: waiting for a Guided goal");
 
     RCLCPP_INFO(
       get_logger(),
-      "Guided navigation ready: goal=%s, FCU position=%s, setpoint=%s, frame=%s",
-      goal_topic_.c_str(), local_position_topic_.c_str(),
-      setpoint_topic_.c_str(), command_frame_.c_str());
+      "Guided navigation ready: goal=%s, waypoint=%s, enable=%s, "
+      "FCU position=%s, setpoint=%s, frame=%s",
+      goal_topic_.c_str(), waypoint_topic_.c_str(), waypoint_enable_topic_.c_str(),
+      local_position_topic_.c_str(), setpoint_topic_.c_str(), command_frame_.c_str());
     RCLCPP_INFO(
       get_logger(),
       "Goal modes: 0=absolute odom, 1=odom-axis offset, "
@@ -242,6 +261,13 @@ private:
     ALIGNING_HEADING,
     MOVING,
     HOLDING
+  };
+
+  enum class GoalSource
+  {
+    NONE,
+    DIRECT,
+    WAYPOINT
   };
 
   void goalCallback(const auv_msg::msg::AuvSetpoint::SharedPtr message)
@@ -285,30 +311,184 @@ private:
       return;
     }
 
+    activateTarget(
+      requested, GoalSource::DIRECT, goalModeText(message->mode));
+  }
+
+  void waypointCallback(
+    const mavros_msgs::msg::PositionTarget::SharedPtr message)
+  {
+    if (!validWaypointMessage(*message)) {
+      return;
+    }
+    pending_waypoint_ = *message;
+    last_waypoint_rx_ = now();
+    tryActivatePendingWaypoint();
+  }
+
+  void waypointEnableCallback(const std_msgs::msg::Bool::SharedPtr message)
+  {
+    const bool was_enabled = waypoint_enabled_;
+    waypoint_enabled_ = message->data;
+    if (!waypoint_enabled_) {
+      if (goal_source_ == GoalSource::WAYPOINT &&
+        control_state_ != ControlState::IDLE)
+      {
+        stopGoal("IDLE: external /waypoint control disabled");
+      } else if (was_enabled && control_state_ == ControlState::IDLE) {
+        setStatus("IDLE: external /waypoint control disabled");
+      }
+      return;
+    }
+
+    if (!was_enabled && control_state_ == ControlState::IDLE) {
+      setStatus("IDLE: /waypoint enabled; waiting for a fresh target");
+    }
+    tryActivatePendingWaypoint();
+  }
+
+  bool validWaypointMessage(
+    const mavros_msgs::msg::PositionTarget & message)
+  {
+    if (
+      message.coordinate_frame !=
+      mavros_msgs::msg::PositionTarget::FRAME_LOCAL_NED)
+    {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Ignoring /waypoint: coordinate_frame must be FRAME_LOCAL_NED");
+      return false;
+    }
+
+    const uint16_t ignored_position =
+      mavros_msgs::msg::PositionTarget::IGNORE_PX |
+      mavros_msgs::msg::PositionTarget::IGNORE_PY |
+      mavros_msgs::msg::PositionTarget::IGNORE_PZ;
+    if ((message.type_mask & ignored_position) != 0U) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Ignoring /waypoint: x, y, and z positions must all be enabled");
+      return false;
+    }
+    if (
+      !isFinite(message.position.x) || !isFinite(message.position.y) ||
+      !isFinite(message.position.z))
+    {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Ignoring /waypoint: position contains a non-finite coordinate");
+      return false;
+    }
+
+    const std::string waypoint_frame = normalizedFrameId(message.header.frame_id);
+    const std::string command_frame = normalizedFrameId(command_frame_);
+    if (!waypoint_frame.empty() && waypoint_frame != command_frame) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Ignoring /waypoint: frame '%s' does not match command frame '%s'",
+        message.header.frame_id.c_str(), command_frame_.c_str());
+      return false;
+    }
+    return true;
+  }
+
+  void tryActivatePendingWaypoint()
+  {
+    if (!waypoint_enabled_ || !pending_waypoint_.has_value()) {
+      return;
+    }
+
+    const auto current_time = now();
+    if (
+      waypoint_cache_timeout_s_ > 0.0 &&
+      (current_time - last_waypoint_rx_).seconds() > waypoint_cache_timeout_s_)
+    {
+      pending_waypoint_.reset();
+      setStatus("IDLE: /waypoint enabled; waiting for a fresh target");
+      return;
+    }
+
+    geometry_msgs::msg::Point requested = pending_waypoint_->position;
+    if (
+      goal_source_ == GoalSource::WAYPOINT &&
+      control_state_ != ControlState::IDLE &&
+      distance(requested, target_position_) <= waypoint_update_epsilon_m_)
+    {
+      return;
+    }
+
+    const auto blocked = targetBlockReason(requested, false);
+    if (blocked.has_value()) {
+      setStatus("WAITING_WAYPOINT: " + *blocked);
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Waiting to accept /waypoint: %s", blocked->c_str());
+      return;
+    }
+
+    activateTarget(requested, GoalSource::WAYPOINT, "external /waypoint");
+  }
+
+  void activateTarget(
+    const geometry_msgs::msg::Point & requested,
+    GoalSource source,
+    const std::string & source_text)
+  {
+    const double goal_distance = distance(
+      requested, current_odometry_.pose.pose.position);
+    const bool updating = control_state_ != ControlState::IDLE;
+
+    if (
+      updating && source == goal_source_ &&
+      distance(requested, target_position_) <= waypoint_update_epsilon_m_)
+    {
+      return;
+    }
+
     hold_position_ = current_odometry_.pose.pose.position;
-    hold_yaw_ = current_yaw_;
+    if (!updating) {
+      hold_yaw_ = current_yaw_;
+    }
     target_position_ = requested;
     target_yaw_ = current_yaw_;
     target_yaw_enabled_ = true;
     updateTargetHeading(false);
-    control_state_ = ControlState::PRIMING;
-    phase_started_at_ = now();
+    goal_source_ = source;
     arrival_started_at_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
     heading_aligned_at_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
     last_progress_status_at_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
 
+    if (!updating) {
+      control_state_ = ControlState::PRIMING;
+      phase_started_at_ = now();
+    } else if (control_state_ == ControlState::HOLDING) {
+      hold_yaw_ = current_yaw_;
+      if (target_yaw_enabled_ && align_heading_before_move_) {
+        control_state_ = ControlState::ALIGNING_HEADING;
+        phase_started_at_ = now();
+      } else {
+        control_state_ = ControlState::MOVING;
+      }
+    }
+
     publishArrived(false);
     publishMissionStatus(auv_msg::msg::MissionStatus::RUNNING);
     publishActiveTarget();
-    setStatus(
-      "PRIMING: holding current position before GUIDED target " +
-      pointText(target_position_));
+    if (updating) {
+      setStatus(
+        "UPDATED: " + source_text + " target " +
+        pointText(target_position_));
+    } else {
+      setStatus(
+        "PRIMING: holding current position before " + source_text +
+        " target " + pointText(target_position_));
+    }
 
     RCLCPP_INFO(
       get_logger(),
-      "Accepted %s goal: odom=(%.3f, %.3f, %.3f), "
+      "%s %s target: odom=(%.3f, %.3f, %.3f), "
       "automatic heading=%.2f deg, distance=%.3f m",
-      goalModeText(message->mode).c_str(),
+      updating ? "Updated" : "Accepted", source_text.c_str(),
       target_position_.x, target_position_.y, target_position_.z,
       target_yaw_ * 180.0 / 3.14159265358979323846, goal_distance);
   }
@@ -357,6 +537,51 @@ private:
     return true;
   }
 
+  std::optional<std::string> targetBlockReason(
+    const geometry_msgs::msg::Point & requested,
+    bool require_start_frame) const
+  {
+    if (!have_state_ || !fcu_connected_) {
+      return "FCU is not connected";
+    }
+    if (!fcu_armed_) {
+      return "FCU must be armed before accepting a movement goal";
+    }
+    if (!external_nav_ready_) {
+      return "ExternalNav gateway is not ready";
+    }
+    if (!positionFresh(now())) {
+      return "Pixhawk local position is not fresh";
+    }
+    if (require_start_frame && !start_frame_ready_) {
+      return "start frame is not ready";
+    }
+    if (!have_current_yaw_) {
+      return "Pixhawk local orientation is not valid";
+    }
+
+    const double goal_distance = distance(
+      requested, current_odometry_.pose.pose.position);
+    if (max_goal_distance_m_ > 0.0 && goal_distance > max_goal_distance_m_) {
+      return
+        "goal is farther than max_goal_distance_m (" +
+        std::to_string(goal_distance) + " m)";
+    }
+    if (requested.z < min_goal_z_m_ || requested.z > max_goal_z_m_) {
+      return
+        "goal z is outside configured limits [" +
+        std::to_string(min_goal_z_m_) + ", " +
+        std::to_string(max_goal_z_m_) + "]";
+    }
+    return std::nullopt;
+  }
+
+  static std::string normalizedFrameId(const std::string & frame_id)
+  {
+    const auto first = frame_id.find_first_not_of('/');
+    return first == std::string::npos ? std::string() : frame_id.substr(first);
+  }
+
   void rejectGoal(const std::string & reason)
   {
     setStatus("REJECTED: " + reason);
@@ -368,14 +593,20 @@ private:
     if (control_state_ == ControlState::IDLE) {
       return;
     }
+    stopGoal("IDLE: goal cancelled; no further setpoints will be published");
+    RCLCPP_WARN(get_logger(), "Guided goal cancelled");
+  }
+
+  void stopGoal(const std::string & status)
+  {
     control_state_ = ControlState::IDLE;
+    goal_source_ = GoalSource::NONE;
     mode_request_pending_ = false;
     arrival_started_at_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
     heading_aligned_at_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
     publishArrived(false);
     publishMissionStatus(auv_msg::msg::MissionStatus::READY);
-    setStatus("IDLE: goal cancelled; no further setpoints will be published");
-    RCLCPP_WARN(get_logger(), "Guided goal cancelled");
+    setStatus(status);
   }
 
   void recaptureStartFrameCallback(const std_msgs::msg::Empty::SharedPtr)
@@ -427,6 +658,7 @@ private:
         "Pixhawk local orientation is invalid");
     }
     tryCaptureStartFrame();
+    tryActivatePendingWaypoint();
   }
 
   void stateCallback(const mavros_msgs::msg::State::SharedPtr message)
@@ -441,12 +673,9 @@ private:
       control_state_ != ControlState::IDLE &&
       !fcu_armed_ && message->connected)
     {
-      control_state_ = ControlState::IDLE;
-      mode_request_pending_ = false;
-      publishArrived(false);
-      publishMissionStatus(auv_msg::msg::MissionStatus::READY);
-      setStatus("IDLE: FCU was disarmed; guided goal cleared");
+      stopGoal("IDLE: FCU was disarmed; guided goal cleared");
     }
+    tryActivatePendingWaypoint();
   }
 
   void externalNavReadyCallback(const std_msgs::msg::Bool::SharedPtr message)
@@ -462,6 +691,7 @@ private:
       start_frame_capture_pending_ = true;
       tryCaptureStartFrame();
     }
+    tryActivatePendingWaypoint();
   }
 
   void tryCaptureStartFrame()
@@ -837,6 +1067,8 @@ private:
   }
 
   std::string goal_topic_;
+  std::string waypoint_topic_;
+  std::string waypoint_enable_topic_;
   std::string cancel_topic_;
   std::string local_position_topic_;
   std::string state_topic_;
@@ -868,6 +1100,8 @@ private:
   double max_goal_distance_m_{20.0};
   double min_goal_z_m_{-50.0};
   double max_goal_z_m_{1.0};
+  double waypoint_update_epsilon_m_{0.02};
+  double waypoint_cache_timeout_s_{1.0};
   bool restore_guided_mode_{true};
   bool start_frame_require_disarmed_{true};
   bool align_heading_before_move_{true};
@@ -883,6 +1117,8 @@ private:
   bool start_frame_ready_{false};
   bool start_frame_capture_pending_{false};
   bool target_yaw_enabled_{false};
+  bool waypoint_enabled_{false};
+  GoalSource goal_source_{GoalSource::NONE};
   std::string current_mode_;
   std::string last_status_;
   geometry_msgs::msg::Point hold_position_;
@@ -893,7 +1129,9 @@ private:
   double target_yaw_{0.0};
   double start_frame_yaw_{0.0};
   nav_msgs::msg::Odometry current_odometry_;
+  std::optional<mavros_msgs::msg::PositionTarget> pending_waypoint_;
   rclcpp::Time last_position_rx_;
+  rclcpp::Time last_waypoint_rx_;
   rclcpp::Time phase_started_at_;
   rclcpp::Time arrival_started_at_;
   rclcpp::Time heading_aligned_at_;
@@ -901,6 +1139,8 @@ private:
   std::chrono::steady_clock::time_point last_mode_request_;
 
   rclcpp::Subscription<auv_msg::msg::AuvSetpoint>::SharedPtr goal_sub_;
+  rclcpp::Subscription<mavros_msgs::msg::PositionTarget>::SharedPtr waypoint_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr waypoint_enable_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr cancel_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr recapture_start_frame_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr local_position_sub_;
