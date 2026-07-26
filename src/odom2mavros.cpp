@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cmath>
@@ -12,6 +13,7 @@
 #include <string>
 #include <system_error>
 
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/twist_with_covariance_stamped.hpp>
 #include <mavros_msgs/msg/state.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -58,6 +60,69 @@ double position_distance(
   return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+using RotationMatrix = std::array<std::array<double, 3>, 3>;
+
+RotationMatrix quaternion_rotation(
+  const geometry_msgs::msg::Quaternion & orientation)
+{
+  const double norm = std::sqrt(
+    orientation.x * orientation.x + orientation.y * orientation.y +
+    orientation.z * orientation.z + orientation.w * orientation.w);
+  const double x = orientation.x / norm;
+  const double y = orientation.y / norm;
+  const double z = orientation.z / norm;
+  const double w = orientation.w / norm;
+
+  return {{
+    {{1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)}},
+    {{2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)}},
+    {{2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)}},
+  }};
+}
+
+geometry_msgs::msg::Vector3 rotate_vector(
+  const RotationMatrix & rotation,
+  const geometry_msgs::msg::Vector3 & vector)
+{
+  geometry_msgs::msg::Vector3 output;
+  output.x =
+    rotation[0][0] * vector.x + rotation[0][1] * vector.y +
+    rotation[0][2] * vector.z;
+  output.y =
+    rotation[1][0] * vector.x + rotation[1][1] * vector.y +
+    rotation[1][2] * vector.z;
+  output.z =
+    rotation[2][0] * vector.x + rotation[2][1] * vector.y +
+    rotation[2][2] * vector.z;
+  return output;
+}
+
+void rotate_linear_covariance(
+  const RotationMatrix & rotation,
+  const std::array<double, 36> & source,
+  std::array<double, 36> & destination)
+{
+  double intermediate[3][3] {};
+  for (std::size_t row = 0; row < 3; ++row) {
+    for (std::size_t column = 0; column < 3; ++column) {
+      for (std::size_t index = 0; index < 3; ++index) {
+        intermediate[row][column] +=
+          rotation[row][index] * source[index * 6 + column];
+      }
+    }
+  }
+
+  for (std::size_t row = 0; row < 3; ++row) {
+    for (std::size_t column = 0; column < 3; ++column) {
+      destination[row * 6 + column] = 0.0;
+      for (std::size_t index = 0; index < 3; ++index) {
+        destination[row * 6 + column] +=
+          intermediate[row][index] * rotation[column][index];
+      }
+    }
+  }
+}
+
 std::string default_counter_file()
 {
   if (const char * ros_home = std::getenv("ROS_HOME")) {
@@ -83,11 +148,14 @@ public:
   : Node("external_nav_odometry_gateway")
   {
     input_topic_ = declare_parameter<std::string>("input_topic", "/odometry/filtered");
-    output_topic_ = declare_parameter<std::string>("output_topic", "/mavros/odometry/out");
+    pose_output_topic_ = declare_parameter<std::string>(
+      "pose_output_topic", "/mavros/vision_pose/pose_cov");
+    velocity_output_topic_ = declare_parameter<std::string>(
+      "velocity_output_topic", "/mavros/vision_speed/speed_twist_cov");
     dvl_topic_ = declare_parameter<std::string>("dvl_topic", "/dvl/twist");
     state_topic_ = declare_parameter<std::string>("state_topic", "/mavros/state");
     reset_counter_topic_ = declare_parameter<std::string>(
-      "reset_counter_topic", "/mavros/odometry/reset_counter");
+      "reset_counter_topic", "/mavros/vision_pose/reset_counter");
     ready_topic_ = declare_parameter<std::string>(
       "ready_topic", "/external_nav/ready");
     status_topic_ = declare_parameter<std::string>(
@@ -119,8 +187,11 @@ public:
     auto reliable_qos = rclcpp::QoS(10).reliable();
     auto latched_qos = rclcpp::QoS(1).reliable().transient_local();
 
-    odometry_pub_ = create_publisher<nav_msgs::msg::Odometry>(
-      output_topic_, reliable_qos);
+    pose_pub_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
+      pose_output_topic_, reliable_qos);
+    velocity_pub_ =
+      create_publisher<geometry_msgs::msg::TwistWithCovarianceStamped>(
+      velocity_output_topic_, reliable_qos);
     reset_counter_pub_ = create_publisher<std_msgs::msg::UInt8>(
       reset_counter_topic_, latched_qos);
     ready_pub_ = create_publisher<std_msgs::msg::Bool>(ready_topic_, latched_qos);
@@ -149,8 +220,9 @@ public:
     set_status(false, "WAITING: FCU, DVL and EKF must become ready while disarmed");
     RCLCPP_INFO(
       get_logger(),
-      "ExternalNav gateway: %s -> %s, DVL watchdog=%s",
-      input_topic_.c_str(), output_topic_.c_str(), dvl_topic_.c_str());
+      "ExternalNav gateway: %s -> %s + %s, DVL watchdog=%s",
+      input_topic_.c_str(), pose_output_topic_.c_str(),
+      velocity_output_topic_.c_str(), dvl_topic_.c_str());
   }
 
 private:
@@ -361,7 +433,7 @@ private:
       std::to_string(reset_counter_));
   }
 
-  void publish_odometry(const rclcpp::Time & current, bool hold_last_estimate)
+  void publish_external_nav(const rclcpp::Time & current, bool hold_last_estimate)
   {
     const uint64_t source_stamp_ns =
       static_cast<uint64_t>(latest_odom_.header.stamp.sec) * 1000000000ULL +
@@ -388,7 +460,27 @@ private:
       }
     }
 
-    odometry_pub_->publish(output);
+    geometry_msgs::msg::PoseWithCovarianceStamped pose;
+    pose.header = output.header;
+    pose.pose = output.pose;
+
+    geometry_msgs::msg::TwistWithCovarianceStamped velocity;
+    velocity.header = output.header;
+    velocity.twist = output.twist;
+
+    // nav_msgs/Odometry expresses twist in child_frame_id. ArduPilot's
+    // VISION_SPEED_ESTIMATE expects velocity in the local earth frame, so
+    // rotate robot_localization's base_link velocity into odom ENU first.
+    const auto rotation = quaternion_rotation(output.pose.pose.orientation);
+    velocity.twist.twist.linear =
+      rotate_vector(rotation, output.twist.twist.linear);
+    velocity.twist.twist.angular =
+      rotate_vector(rotation, output.twist.twist.angular);
+    rotate_linear_covariance(
+      rotation, output.twist.covariance, velocity.twist.covariance);
+
+    pose_pub_->publish(pose);
+    velocity_pub_->publish(velocity);
     last_published_source_stamp_ns_ = source_stamp_ns;
   }
 
@@ -426,7 +518,9 @@ private:
         return;
       }
       gate_state_ = GateState::ACTIVE;
-      set_status(true, "ACTIVE: filtered odometry is being sent to Pixhawk");
+      set_status(
+        true,
+        "ACTIVE: filtered pose and world velocity are being sent to Pixhawk");
     }
 
     const bool fcu_state_stale =
@@ -438,7 +532,7 @@ private:
     const bool dvl_stale =
       age_seconds(last_dvl_rx_, current) > max_dvl_age_s_;
 
-    publish_odometry(current, odometry_stale);
+    publish_external_nav(current, odometry_stale);
 
     if (odometry_stale) {
       set_status(
@@ -447,13 +541,15 @@ private:
     } else if (fcu_state_stale) {
       set_status(
         true,
-        "DEGRADED: FCU link is stale; odometry publication continues");
+        "DEGRADED: FCU link is stale; ExternalNav publication continues");
     } else if (dvl_stale) {
       set_status(
         true,
-        "DEGRADED: DVL is stale; filtered odometry publication continues");
+        "DEGRADED: DVL is stale; filtered ExternalNav publication continues");
     } else {
-      set_status(true, "ACTIVE: filtered odometry is being sent to Pixhawk");
+      set_status(
+        true,
+        "ACTIVE: filtered pose and world velocity are being sent to Pixhawk");
     }
   }
 
@@ -481,7 +577,8 @@ private:
   }
 
   std::string input_topic_;
-  std::string output_topic_;
+  std::string pose_output_topic_;
+  std::string velocity_output_topic_;
   std::string dvl_topic_;
   std::string state_topic_;
   std::string reset_counter_topic_;
@@ -521,7 +618,8 @@ private:
   nav_msgs::msg::Odometry latest_odom_;
   nav_msgs::msg::Odometry previous_odom_;
 
-  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odometry_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pose_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::TwistWithCovarianceStamped>::SharedPtr velocity_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr reset_counter_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ready_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;

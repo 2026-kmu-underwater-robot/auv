@@ -8,8 +8,9 @@
       - global_position
       - imu
       - local_position
-      - odometry
       - rc_io
       - setpoint_raw
       - sys_status
       - sys_time
+      - vision_pose
+      - vision_speed
