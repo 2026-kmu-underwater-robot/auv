@@ -21,6 +21,7 @@ Powermodule → CANable → NUC 구성에서 DroneCAN BatteryInfo를 ROS2 토픽
 import math
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -47,6 +48,8 @@ HEALTHY_CAN_STATES = {
     "LOWERLAYERDOWN",
     "ERROR-ACTIVE",
 }
+_IP_CMD_CANDIDATE = shutil.which("ip")
+IP_CMD = os.path.realpath(_IP_CMD_CANDIDATE) if _IP_CMD_CANDIDATE else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -58,42 +61,63 @@ def _run(cmd):
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
-def _iface_exists(name: str) -> bool:   #장치 연결 확인
+def _iface_exists(name: str) -> bool:  # 장치 연결 확인
     """
     CAN 인터페이스(can1 등)가 시스템에 존재하는지 확인.
     ip -br link 출력에서 이름 검색.
     """
-    out = _run(["/sbin/ip", "-br", "link"]).stdout
+    if IP_CMD is None:
+        return False
+    out = _run([IP_CMD, "-br", "link"]).stdout
     return bool(re.search(rf"\b{name}\b", out))
 
 
-def _iface_state(name: str) -> str:   #인터페이스 상태 확인
+def _iface_state(name: str) -> str:  # 인터페이스 상태 확인
     """
     인터페이스 상태(UP/DOWN 등) 반환.
     ip -d -s link show <name> 출력에서 state 파싱.
     """
-    out = _run(["/sbin/ip", "-d", "-s", "link", "show", name]).stdout
+    if IP_CMD is None:
+        return "UNKNOWN"
+    out = _run([IP_CMD, "-d", "-s", "link", "show", name]).stdout
     m = re.search(r"\bstate\s+(\S+)", out)
     return m.group(1) if m else "UNKNOWN"
 
 
-def _bringup_can(name: str, bitrate: int | None = None, use_sudo: bool = True, logger=None) -> bool:    #CAN 인터페이스 상태 활성화
+def _bringup_can(
+    name: str,
+    bitrate: int | None = None,
+    use_sudo: bool = True,
+    logger=None,
+) -> bool:  # CAN 인터페이스 상태 활성화
     """
     CAN 인터페이스를 UP 상태로 전환.
     bitrate가 주어지면 down → type can bitrate 설정 → up 순서로 실행.
     권한 없으면 sudo -n으로 재시도 (NOPASSWD 설정 시).
     """
+    if IP_CMD is None:
+        if logger:
+            logger.warn("ip command not found; skipping CAN auto bring-up")
+        return False
+
     ok = False
     cmds = []
     if bitrate:
-        cmds += [
-            ["/sbin/ip", "link", "set", name, "down"],
+        cmds.append([IP_CMD, "link", "set", name, "down"])
+        type_cmds = [
             [
-                "/sbin/ip", "link", "set", name, "type", "can",
+                IP_CMD, "link", "set", name, "type", "can",
                 "bitrate", str(bitrate), "berr-reporting", "on", "restart-ms", "100",
             ],
+            [
+                IP_CMD, "link", "set", name, "type", "can",
+                "bitrate", str(bitrate), "restart-ms", "100",
+            ],
+            [
+                IP_CMD, "link", "set", name, "type", "can",
+                "bitrate", str(bitrate),
+            ],
         ]
-    cmds += [["/sbin/ip", "link", "set", name, "up"]]
 
     for c in cmds:
         r = _run(c)
@@ -104,6 +128,31 @@ def _bringup_can(name: str, bitrate: int | None = None, use_sudo: bool = True, l
                 logger.warn(f"bringup cmd failed: {' '.join(c)} -> {r.stderr.strip()}")
         else:
             ok = True
+
+    if bitrate:
+        type_ok = False
+        for c in type_cmds:
+            r = _run(c)
+            if r.returncode != 0 and use_sudo:
+                r = _run(["sudo", "-n", *c])
+            if r.returncode == 0:
+                type_ok = True
+                break
+            if logger:
+                logger.warn(
+                    f"CAN type setup failed: {' '.join(c)} -> {r.stderr.strip()}"
+                )
+        ok = ok or type_ok
+
+    c = [IP_CMD, "link", "set", name, "up"]
+    r = _run(c)
+    if r.returncode != 0 and use_sudo:
+        r = _run(["sudo", "-n", *c])
+    if r.returncode != 0:
+        if logger:
+            logger.warn(f"bringup cmd failed: {' '.join(c)} -> {r.stderr.strip()}")
+    else:
+        ok = True
 
     if _iface_exists(name):
         st = _iface_state(name)
@@ -182,6 +231,9 @@ class Bridge(Node):
         self.dronecan_node = None
         self.dc_mon = None
         self.dc_alloc = None
+        self._stop_event = threading.Event()
+        self._spin_thread = None
+        self._watchdog_thread = None
 
         # ── CAN bring-up ─────────────────────────────────────────────────────
         if self.auto_bringup:
@@ -205,8 +257,18 @@ class Bridge(Node):
         self._transfer_err_recover_threshold = 10
 
         # spin(DroneCAN 전용 스레드) + 링크 감시
-        threading.Thread(target=self.spin, daemon=True, name="dronecan_spin").start()
-        threading.Thread(target=self.link_watchdog, daemon=True).start()
+        self._spin_thread = threading.Thread(
+            target=self.spin,
+            daemon=True,
+            name="dronecan_spin",
+        )
+        self._watchdog_thread = threading.Thread(
+            target=self.link_watchdog,
+            daemon=True,
+            name="dronecan_link_watchdog",
+        )
+        self._spin_thread.start()
+        self._watchdog_thread.start()
 
         self.get_logger().info(
             f"DroneCAN→ROS2 Battery bridge on {self.iface} "
@@ -222,7 +284,22 @@ class Bridge(Node):
             if last is not None and now - last < limit:
                 return
             self._last_log_times[key] = now
-        getattr(self.get_logger(), level)(message)
+
+        # rclpy identifies a logging call by its source location and requires
+        # that location to keep using the same severity.  Calling a dynamically
+        # selected method from one line makes INFO followed by WARN fail with
+        # "Logger severity cannot be changed between calls."
+        logger = self.get_logger()
+        if level == "debug":
+            logger.debug(message)
+        elif level == "info":
+            logger.info(message)
+        elif level in ("warn", "warning"):
+            logger.warn(message)
+        elif level == "error":
+            logger.error(message)
+        else:
+            raise ValueError(f"Unsupported log level: {level}")
 
     def _report_can_state(self, state):
         """CAN 링크 상태 변화는 즉시, 같은 비정상 상태는 제한 주기로 기록."""
@@ -333,10 +410,50 @@ class Bridge(Node):
                     f"Failed to set termination on nid={self.target_nid}: {e!r}",
                 )
 
+    def _close_dronecan_stack(self) -> None:
+        """
+        DroneCAN 자원을 생성한 spin 스레드에서 모두 정리한다.
+
+        CentralizedServer의 SQLite 연결은 생성한 스레드에서 닫아야 하며,
+        DroneCAN Node.close()가 SocketCAN writer 스레드와 소켓을 종료한다.
+        """
+        allocator = self.dc_alloc
+        monitor = self.dc_mon
+        node = self.dronecan_node
+        self.dc_alloc = None
+        self.dc_mon = None
+        self.dronecan_node = None
+
+        for resource in (allocator, monitor, node):
+            close = getattr(resource, "close", None)
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception as exc:
+                self._log_throttled(
+                    "dronecan_close_failed",
+                    "warn",
+                    f"DroneCAN resource close failed: {exc!r}",
+                )
+
+    def _wait_or_stop(self, duration: float) -> bool:
+        """Wait for duration and return True when shutdown was requested."""
+        return self._stop_event.wait(max(0.0, duration))
+
+    def shutdown(self) -> None:
+        """Stop worker threads; the spin thread closes its own DroneCAN stack."""
+        self._stop_event.set()
+        current_thread = threading.current_thread()
+        for worker in (self._spin_thread, self._watchdog_thread):
+            if worker is None or worker is current_thread:
+                continue
+            worker.join(timeout=2.0)
+
     # ── 링크 감시: 전원 사이클 후 DOWN이면 자동 bring-up ──────────────────────
     def link_watchdog(self):
         """1초마다 CAN 인터페이스 상태 확인. DOWN이면 bring-up 재시도."""
-        while rclpy.ok():
+        while rclpy.ok() and not self._stop_event.is_set():
             try:
                 if self.auto_bringup and _iface_exists(self.iface):
                     st = _iface_state(self.iface)
@@ -349,9 +466,40 @@ class Bridge(Node):
                     "warn",
                     f"link_watchdog error: {e!r}",
                 )
-            time.sleep(1.0)
+            self._wait_or_stop(1.0)
 
     # ── DroneCAN param helpers ───────────────────────────────────────────────
+    def _request_sync(self, request, nid, timeout):
+        """
+        DroneCAN의 callback 기반 service request를 현재 spin 스레드에서
+        동기식으로 기다리고, 응답 payload 또는 timeout 시 None을 반환한다.
+        """
+        if self.dronecan_node is None:
+            return None
+
+        completed = threading.Event()
+        response = []
+
+        def on_response(event):
+            response.append(None if event is None else event.response)
+            completed.set()
+
+        self.dronecan_node.request(
+            request,
+            nid,
+            on_response,
+            timeout=timeout,
+        )
+
+        deadline = time.monotonic() + timeout
+        while not completed.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            self.dronecan_node.spin(min(0.05, remaining))
+
+        return response[0] if response else None
+
     def _getset(self, nid, name=None, index=None, set_value=None, timeout=1.0):
         """DroneCAN param.GetSet 요청/응답."""
         if self.dronecan_node is None:
@@ -368,7 +516,7 @@ class Bridge(Node):
             except Exception:
                 v.boolean_value = bool(set_value)
             req.value = v
-        return self.dronecan_node.request(req, nid, timeout=timeout)
+        return self._request_sync(req, nid, timeout)
 
     def _save_params(self, nid, timeout=2.0):
         """DroneCAN param.ExecuteOpcode(SAVE) 요청."""
@@ -380,7 +528,7 @@ class Bridge(Node):
                 dronecan.uavcan.protocol.param.ExecuteOpcode.Request, "OPCODE_SAVE", 0
             )
             req.argument = 0
-            self.dronecan_node.request(req, nid, timeout=timeout)
+            self._request_sync(req, nid, timeout)
         except Exception:
             pass
 
@@ -430,85 +578,88 @@ class Bridge(Node):
         DroneCAN 전용 스레드: _init_dronecan_stack() 후 node.spin 반복.
         TransferError는 디버그 로그만, 10회 이상 연속 시 bring-up 재시도.
         """
-        while rclpy.ok():
-            if self.dronecan_node is None:
-                if self.auto_bringup and _iface_exists(self.iface):
-                    state = _iface_state(self.iface)
-                    self._report_can_state(state)
-                    if state not in HEALTHY_CAN_STATES:
-                        self._attempt_can_bringup()
-                        time.sleep(self.can_retry_interval)
-                        continue
-                try:
-                    self._init_dronecan_stack()
-                except Exception as e:
-                    self._log_throttled(
-                        "dronecan_init_failed",
-                        "warn",
-                        f"DroneCAN init failed (retrying): {e!r}",
-                    )
-                    time.sleep(self.can_retry_interval)
-                    continue
-
-            try:
-                self.dronecan_node.spin(0.01)
-                self._transfer_err_count = 0
-            except Exception as e:
-                transfer_err_cls = None
-                try:
-                    transfer_err_cls = getattr(dronecan.transport, "TransferError", None)
-                except Exception:
-                    pass
-
-                if transfer_err_cls is not None and isinstance(e, transfer_err_cls):
-                    self._transfer_err_count += 1
-                    now = time.time()
-                    if now - self._last_transfer_err_log_t > self._transfer_err_log_interval:
-                        self.get_logger().debug(
-                            f"TransferError (ignored): {e!r} (count={self._transfer_err_count})"
-                        )
-                        self._last_transfer_err_log_t = now
-                    if (
-                        self._transfer_err_count >= self._transfer_err_recover_threshold
-                        and self.auto_bringup
-                    ):
-                        self._log_throttled(
-                            "repeated_transfer_error",
-                            "warn",
-                            f"Repeated TransferError (x{self._transfer_err_count}) "
-                            f"→ bring-up {self.iface}",
-                        )
-                        try:
+        try:
+            while rclpy.ok() and not self._stop_event.is_set():
+                if self.dronecan_node is None:
+                    if self.auto_bringup and _iface_exists(self.iface):
+                        state = _iface_state(self.iface)
+                        self._report_can_state(state)
+                        if state not in HEALTHY_CAN_STATES:
                             self._attempt_can_bringup()
-                        except Exception as ex:
-                            self._log_throttled(
-                                "transfer_bringup_failed",
-                                "warn",
-                                f"bring-up 시도 실패: {ex!r}",
+                            self._wait_or_stop(self.can_retry_interval)
+                            continue
+                    try:
+                        self._init_dronecan_stack()
+                    except Exception as e:
+                        self._close_dronecan_stack()
+                        self._log_throttled(
+                            "dronecan_init_failed",
+                            "warn",
+                            f"DroneCAN init failed (retrying): {e!r}",
+                        )
+                        self._wait_or_stop(self.can_retry_interval)
+                        continue
+
+                try:
+                    self.dronecan_node.spin(0.01)
+                    self._transfer_err_count = 0
+                except Exception as e:
+                    transfer_err_cls = None
+                    try:
+                        transfer_err_cls = getattr(dronecan.transport, "TransferError", None)
+                    except Exception:
+                        pass
+
+                    if transfer_err_cls is not None and isinstance(e, transfer_err_cls):
+                        self._transfer_err_count += 1
+                        now = time.time()
+                        if now - self._last_transfer_err_log_t > self._transfer_err_log_interval:
+                            self.get_logger().debug(
+                                f"TransferError (ignored): {e!r} "
+                                f"(count={self._transfer_err_count})"
                             )
-                        self._transfer_err_count = 0
-                    time.sleep(0.01)
-                    continue
+                            self._last_transfer_err_log_t = now
+                        if (
+                            self._transfer_err_count >= self._transfer_err_recover_threshold
+                            and self.auto_bringup
+                        ):
+                            self._log_throttled(
+                                "repeated_transfer_error",
+                                "warn",
+                                f"Repeated TransferError (x{self._transfer_err_count}) "
+                                f"→ bring-up {self.iface}",
+                            )
+                            try:
+                                self._attempt_can_bringup()
+                            except Exception as ex:
+                                self._log_throttled(
+                                    "transfer_bringup_failed",
+                                    "warn",
+                                    f"bring-up 시도 실패: {ex!r}",
+                                )
+                            self._transfer_err_count = 0
+                        self._wait_or_stop(0.01)
+                        continue
 
-                err_text = str(e).lower()
-                if "no such device" in err_text or "network is down" in err_text:
+                    err_text = str(e).lower()
+                    if "no such device" in err_text or "network is down" in err_text:
+                        self._log_throttled(
+                            "can_link_lost",
+                            "warn",
+                            f"CAN link lost ({e!r}); will re-init DroneCAN stack",
+                        )
+                        self._close_dronecan_stack()
+                        self._wait_or_stop(self.can_retry_interval)
+                        continue
+
                     self._log_throttled(
-                        "can_link_lost",
+                        "dronecan_spin_error",
                         "warn",
-                        f"CAN link lost ({e!r}); will re-init DroneCAN stack",
+                        f"node.spin error: {e!r}",
                     )
-                    self.dronecan_node = None
-                    self.dc_mon = None
-                    self.dc_alloc = None
-                    time.sleep(self.can_retry_interval)
-                    continue
-
-                self._log_throttled(
-                    "dronecan_spin_error",
-                    "warn",
-                    f"node.spin error: {e!r}",
-                )
-                time.sleep(0.5)
+                    self._wait_or_stop(0.5)
+        finally:
+            self._close_dronecan_stack()
 
     # ── BatteryInfo 콜백 ─────────────────────────────────────────────────────
     def on_batt(self, e):
@@ -568,6 +719,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        node.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

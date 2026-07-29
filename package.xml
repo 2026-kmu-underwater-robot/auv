@@ -13,15 +13,12 @@
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
-  <depend>std_msgs</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
   <depend>mavros_msgs</depend>
   <depend>auv_dvl_a50_msg</depend>
-  <depend>auv_msg</depend>
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>geographic_msgs</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
