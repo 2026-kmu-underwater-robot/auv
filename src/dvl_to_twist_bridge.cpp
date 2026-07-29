@@ -1,8 +1,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <memory>
 #include <string>
 
+#include "auv/covariance_recovery_ramp.hpp"
+#include "auv/velocity_sample_gate.hpp"
 #include <auv_dvl_a50_msg/msg/dvl.hpp>
 #include <geometry_msgs/msg/twist_with_covariance_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -27,10 +31,30 @@ public:
     require_valid_velocity_ = declare_parameter<bool>("require_valid_velocity", true);
     reacquire_good_samples_ = declare_parameter<int>("reacquire_good_samples", 1);
     reacquire_duration_s_ = declare_parameter<double>("reacquire_duration_s", 0.0);
+    max_velocity_mps_ = declare_parameter<double>("max_velocity_mps", 0.8);
+    max_acceleration_mps2_ = declare_parameter<double>("max_acceleration_mps2", 1.0);
+    velocity_jump_tolerance_mps_ =
+      declare_parameter<double>("velocity_jump_tolerance_mps", 0.03);
+    max_rate_dt_s_ = declare_parameter<double>("max_rate_dt_s", 0.5);
+    recovery_trigger_gap_s_ = declare_parameter<double>("recovery_trigger_gap_s", 0.25);
+    recovery_initial_variance_ =
+      declare_parameter<double>("recovery_initial_variance", 1.0);
+    recovery_variance_decay_ =
+      declare_parameter<double>("recovery_variance_decay", 0.8);
+    recovery_variance_samples_ =
+      declare_parameter<int>("recovery_variance_samples", 56);
+    velocity_gate_ = std::make_unique<auv::VelocitySampleGate>(
+      max_velocity_mps_,
+      max_acceleration_mps2_,
+      velocity_jump_tolerance_mps_,
+      max_rate_dt_s_);
+    covariance_recovery_ = std::make_unique<auv::CovarianceRecoveryRamp>(
+      recovery_initial_variance_, recovery_variance_decay_, recovery_variance_samples_);
 
     const auto sensor_qos = rclcpp::SensorDataQoS();
 
-    publisher_ = create_publisher<geometry_msgs::msg::TwistWithCovarianceStamped>(output_topic_, 10);
+    publisher_ =
+      create_publisher<geometry_msgs::msg::TwistWithCovarianceStamped>(output_topic_, 10);
     subscription_ = create_subscription<auv_dvl_a50_msg::msg::DVL>(
       input_topic_, sensor_qos,
       std::bind(&DvlToTwistBridge::handle_msg, this, std::placeholders::_1));
@@ -48,6 +72,18 @@ public:
       get_logger(),
       "DVL reacquire gate: good_samples=%d duration=%.2fs",
       reacquire_good_samples_, reacquire_duration_s_);
+    RCLCPP_INFO(
+      get_logger(),
+      "DVL physical gate: max_velocity=%.2f m/s max_acceleration=%.2f m/s^2 "
+      "jump_tolerance=%.3f m/s max_dt=%.2f s",
+      max_velocity_mps_, max_acceleration_mps2_,
+      velocity_jump_tolerance_mps_, max_rate_dt_s_);
+    RCLCPP_INFO(
+      get_logger(),
+      "DVL covariance recovery: gap=%.2f s initial_variance=%.3g decay=%.3g "
+      "samples=%d -> sensor",
+      recovery_trigger_gap_s_, recovery_initial_variance_, recovery_variance_decay_,
+      recovery_variance_samples_);
   }
 
 private:
@@ -58,11 +94,44 @@ private:
         get_logger(), *get_clock(), 2000,
         "Skipping DVL sample marked invalid.");
       reset_reacquisition();
+      trigger_covariance_recovery();
       return;
     }
     if (!is_valid_measurement(*msg)) {
       reset_reacquisition();
+      trigger_covariance_recovery();
       return;
+    }
+
+    auto sample_time = rclcpp::Time(msg->header.stamp);
+    if (sample_time.nanoseconds() <= 0) {
+      sample_time = now();
+    }
+    const auto velocity_gate_result = velocity_gate_->update(
+      msg->velocity.x, msg->velocity.y, msg->velocity.z,
+      sample_time.nanoseconds());
+    if (velocity_gate_result.decision != auv::VelocitySampleGate::Decision::ACCEPT) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Skipping DVL sample rejected by physical gate: "
+        "speed=%.3f m/s, delta=%.3f m/s, allowed=%.3f m/s, reason=%d.",
+        velocity_gate_result.speed_mps,
+        velocity_gate_result.velocity_delta_mps,
+        velocity_gate_result.allowed_delta_mps,
+        static_cast<int>(velocity_gate_result.decision));
+      reset_reacquisition();
+      trigger_covariance_recovery();
+      return;
+    }
+
+    if (
+      last_published_sample_time_ns_ > 0 &&
+      recovery_trigger_gap_s_ > 0.0 &&
+      static_cast<double>(
+        sample_time.nanoseconds() - last_published_sample_time_ns_) * 1.0e-9 >
+      recovery_trigger_gap_s_)
+    {
+      trigger_covariance_recovery();
     }
 
     geometry_msgs::msg::TwistWithCovarianceStamped out;
@@ -99,6 +168,7 @@ private:
         get_logger(), *get_clock(), 2000,
         "Skipping DVL sample with excessive covariance.");
       reset_reacquisition();
+      trigger_covariance_recovery();
       return;
     }
 
@@ -114,7 +184,20 @@ private:
       return;
     }
 
+    if (covariance_recovery_->active()) {
+      const int recovery_stage = covariance_recovery_->stage();
+      cov[0] = covariance_recovery_->apply(cov[0]);
+      cov[7] = covariance_recovery_->apply(cov[7]);
+      cov[14] = covariance_recovery_->apply(cov[14]);
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "DVL covariance recovery stage %d: linear variance %.6g.",
+        recovery_stage, cov[0]);
+      covariance_recovery_->advance();
+    }
+
     publisher_->publish(out);
+    last_published_sample_time_ns_ = sample_time.nanoseconds();
   }
 
   bool is_valid_measurement(const auv_dvl_a50_msg::msg::DVL & msg)
@@ -143,8 +226,8 @@ private:
 
     if (min_valid_beams_ > 0) {
       const auto valid_beams = static_cast<int>(std::count_if(
-        msg.beams.begin(), msg.beams.end(),
-        [](const auto & beam) { return beam.valid; }));
+          msg.beams.begin(), msg.beams.end(),
+          [](const auto & beam) {return beam.valid;}));
       if (valid_beams < min_valid_beams_) {
         RCLCPP_WARN_THROTTLE(
           get_logger(), *get_clock(), 2000,
@@ -188,6 +271,11 @@ private:
     first_good_time_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
   }
 
+  void trigger_covariance_recovery()
+  {
+    covariance_recovery_->trigger();
+  }
+
   bool is_reacquired()
   {
     if (reacquire_good_samples_ <= 1 && reacquire_duration_s_ <= 0.0) {
@@ -222,9 +310,20 @@ private:
   bool require_valid_velocity_;
   int reacquire_good_samples_;
   double reacquire_duration_s_;
+  double max_velocity_mps_;
+  double max_acceleration_mps2_;
+  double velocity_jump_tolerance_mps_;
+  double max_rate_dt_s_;
+  double recovery_trigger_gap_s_;
+  double recovery_initial_variance_;
+  double recovery_variance_decay_;
+  int recovery_variance_samples_;
   bool reacquired_{false};
   int consecutive_good_samples_{0};
+  std::int64_t last_published_sample_time_ns_{0};
   rclcpp::Time first_good_time_{0, 0, RCL_ROS_TIME};
+  std::unique_ptr<auv::VelocitySampleGate> velocity_gate_;
+  std::unique_ptr<auv::CovarianceRecoveryRamp> covariance_recovery_;
   rclcpp::Publisher<geometry_msgs::msg::TwistWithCovarianceStamped>::SharedPtr publisher_;
   rclcpp::Subscription<auv_dvl_a50_msg::msg::DVL>::SharedPtr subscription_;
 };

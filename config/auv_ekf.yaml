@@ -23,6 +23,7 @@ ekf_filter_node:
                     false, false, false]
     twist0_queue_size: 10
     twist0_nodelay: true
+    twist0_rejection_threshold: 3.0
 
     pose0: /depth/pose
     pose0_config: [false, false, true,

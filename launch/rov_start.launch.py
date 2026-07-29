@@ -94,7 +94,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("depth_frame", default_value="depth_link"),
         DeclareLaunchArgument("imu_frame", default_value="imu_link"),
         # base_link -> fcu_link (FCU/IMU) static TF
-        DeclareLaunchArgument("base_to_fcu_x", default_value="0.09135"),
+        DeclareLaunchArgument("base_to_fcu_x", default_value="0.13135"),
         DeclareLaunchArgument("base_to_fcu_y", default_value="0.0"),
         DeclareLaunchArgument("base_to_fcu_z", default_value="0.08541"),
         DeclareLaunchArgument("base_to_fcu_roll", default_value="0.0"),
@@ -137,6 +137,14 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("dvl_twist_min_valid_beams", default_value="3"),
         DeclareLaunchArgument("dvl_twist_reacquire_good_samples", default_value="1"),
         DeclareLaunchArgument("dvl_twist_reacquire_duration", default_value="0.0"),
+        DeclareLaunchArgument("dvl_twist_max_velocity", default_value="0.8"),
+        DeclareLaunchArgument("dvl_twist_max_acceleration", default_value="1.0"),
+        DeclareLaunchArgument("dvl_twist_jump_tolerance", default_value="0.03"),
+        DeclareLaunchArgument("dvl_twist_max_rate_dt", default_value="0.5"),
+        DeclareLaunchArgument("dvl_twist_recovery_trigger_gap", default_value="0.25"),
+        DeclareLaunchArgument("dvl_twist_recovery_initial_variance", default_value="1.0"),
+        DeclareLaunchArgument("dvl_twist_recovery_variance_decay", default_value="0.8"),
+        DeclareLaunchArgument("dvl_twist_recovery_variance_samples", default_value="56"),
         DeclareLaunchArgument("use_dvl_position_odom", default_value="true"),
         DeclareLaunchArgument("dvl_position_odom_topic", default_value="/dvl/odometry"),
         DeclareLaunchArgument("dvl_position_frame", default_value="dvl_odom"),
@@ -154,6 +162,13 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("pressure_topic", default_value="/mavros/imu/static_pressure"),
         DeclareLaunchArgument("pressure_input_mode", default_value="pressure_pa"),
         DeclareLaunchArgument("fluid_density", default_value="1000.0"),
+        DeclareLaunchArgument("enable_depth_gate", default_value="true"),
+        DeclareLaunchArgument("depth_gate_max_vertical_speed", default_value="2.0"),
+        DeclareLaunchArgument("depth_gate_jump_tolerance", default_value="0.10"),
+        DeclareLaunchArgument("depth_gate_max_rate_dt", default_value="0.5"),
+        DeclareLaunchArgument("depth_gate_reacquire_good_samples", default_value="3"),
+        DeclareLaunchArgument("depth_gate_reacquire_variance_samples", default_value="3"),
+        DeclareLaunchArgument("depth_gate_reacquire_variance_scale", default_value="10.0"),
         DeclareLaunchArgument("joy_axis_deadzone", default_value="0.08"),
         DeclareLaunchArgument("joy_vertical_axis_deadzone", default_value="0.10"),
         DeclareLaunchArgument("joy_pwm_range", default_value="300.0"),
@@ -185,6 +200,18 @@ def generate_launch_description() -> LaunchDescription:
     dvl_twist_min_valid_beams = LaunchConfiguration("dvl_twist_min_valid_beams")
     dvl_twist_reacquire_good_samples = LaunchConfiguration("dvl_twist_reacquire_good_samples")
     dvl_twist_reacquire_duration = LaunchConfiguration("dvl_twist_reacquire_duration")
+    dvl_twist_max_velocity = LaunchConfiguration("dvl_twist_max_velocity")
+    dvl_twist_max_acceleration = LaunchConfiguration("dvl_twist_max_acceleration")
+    dvl_twist_jump_tolerance = LaunchConfiguration("dvl_twist_jump_tolerance")
+    dvl_twist_max_rate_dt = LaunchConfiguration("dvl_twist_max_rate_dt")
+    dvl_twist_recovery_trigger_gap = LaunchConfiguration(
+        "dvl_twist_recovery_trigger_gap")
+    dvl_twist_recovery_initial_variance = LaunchConfiguration(
+        "dvl_twist_recovery_initial_variance")
+    dvl_twist_recovery_variance_decay = LaunchConfiguration(
+        "dvl_twist_recovery_variance_decay")
+    dvl_twist_recovery_variance_samples = LaunchConfiguration(
+        "dvl_twist_recovery_variance_samples")
     use_dvl_position_odom = LaunchConfiguration("use_dvl_position_odom")
     dvl_position_odom_topic = LaunchConfiguration("dvl_position_odom_topic")
     dvl_position_frame = LaunchConfiguration("dvl_position_frame")
@@ -205,6 +232,16 @@ def generate_launch_description() -> LaunchDescription:
     pressure_topic = LaunchConfiguration("pressure_topic")
     pressure_input_mode = LaunchConfiguration("pressure_input_mode")
     fluid_density = LaunchConfiguration("fluid_density")
+    enable_depth_gate = LaunchConfiguration("enable_depth_gate")
+    depth_gate_max_vertical_speed = LaunchConfiguration("depth_gate_max_vertical_speed")
+    depth_gate_jump_tolerance = LaunchConfiguration("depth_gate_jump_tolerance")
+    depth_gate_max_rate_dt = LaunchConfiguration("depth_gate_max_rate_dt")
+    depth_gate_reacquire_good_samples = LaunchConfiguration(
+        "depth_gate_reacquire_good_samples")
+    depth_gate_reacquire_variance_samples = LaunchConfiguration(
+        "depth_gate_reacquire_variance_samples")
+    depth_gate_reacquire_variance_scale = LaunchConfiguration(
+        "depth_gate_reacquire_variance_scale")
     joy_axis_deadzone = LaunchConfiguration("joy_axis_deadzone")
     joy_vertical_axis_deadzone = LaunchConfiguration("joy_vertical_axis_deadzone")
     joy_pwm_range = LaunchConfiguration("joy_pwm_range")
@@ -433,6 +470,22 @@ def generate_launch_description() -> LaunchDescription:
                         dvl_twist_reacquire_good_samples, value_type=int),
                     "reacquire_duration_s": ParameterValue(
                         dvl_twist_reacquire_duration, value_type=float),
+                    "max_velocity_mps": ParameterValue(
+                        dvl_twist_max_velocity, value_type=float),
+                    "max_acceleration_mps2": ParameterValue(
+                        dvl_twist_max_acceleration, value_type=float),
+                    "velocity_jump_tolerance_mps": ParameterValue(
+                        dvl_twist_jump_tolerance, value_type=float),
+                    "max_rate_dt_s": ParameterValue(
+                        dvl_twist_max_rate_dt, value_type=float),
+                    "recovery_trigger_gap_s": ParameterValue(
+                        dvl_twist_recovery_trigger_gap, value_type=float),
+                    "recovery_initial_variance": ParameterValue(
+                        dvl_twist_recovery_initial_variance, value_type=float),
+                    "recovery_variance_decay": ParameterValue(
+                        dvl_twist_recovery_variance_decay, value_type=float),
+                    "recovery_variance_samples": ParameterValue(
+                        dvl_twist_recovery_variance_samples, value_type=int),
                 },
             ],
             condition=localization_enabled,
@@ -483,6 +536,31 @@ def generate_launch_description() -> LaunchDescription:
                 {"input_mode": pressure_input_mode},
                 {"world_frame": "odom"},
                 {"fluid_density": ParameterValue(fluid_density, value_type=float)},
+                {"enable_depth_gate": ParameterValue(enable_depth_gate, value_type=bool)},
+                {
+                    "max_vertical_speed_mps": ParameterValue(
+                        depth_gate_max_vertical_speed, value_type=float)
+                },
+                {
+                    "jump_tolerance_m": ParameterValue(
+                        depth_gate_jump_tolerance, value_type=float)
+                },
+                {
+                    "max_rate_dt_s": ParameterValue(
+                        depth_gate_max_rate_dt, value_type=float)
+                },
+                {
+                    "reacquire_good_samples": ParameterValue(
+                        depth_gate_reacquire_good_samples, value_type=int)
+                },
+                {
+                    "reacquire_variance_samples": ParameterValue(
+                        depth_gate_reacquire_variance_samples, value_type=int)
+                },
+                {
+                    "reacquire_variance_scale": ParameterValue(
+                        depth_gate_reacquire_variance_scale, value_type=float)
+                },
             ],
             condition=localization_enabled,
         ),

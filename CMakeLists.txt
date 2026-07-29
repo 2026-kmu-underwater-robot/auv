@@ -22,6 +22,7 @@ find_package(auv_dvl_a50_msg REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  find_package(ament_cmake_gtest REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files
   set(ament_cmake_copyright_FOUND TRUE)
@@ -30,6 +31,18 @@ if(BUILD_TESTING)
   # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  ament_add_gtest(test_depth_sample_gate test/test_depth_sample_gate.cpp)
+  target_include_directories(test_depth_sample_gate PRIVATE include)
+
+  ament_add_gtest(test_velocity_sample_gate test/test_velocity_sample_gate.cpp)
+  target_include_directories(test_velocity_sample_gate PRIVATE include)
+
+  ament_add_gtest(
+    test_covariance_recovery_ramp
+    test/test_covariance_recovery_ramp.cpp
+  )
+  target_include_directories(test_covariance_recovery_ramp PRIVATE include)
 endif()
 
 add_executable(cam2baselink_static_tf src/cam2baselink_static_tf.cpp)
@@ -48,6 +61,7 @@ add_executable(vfr2atm_pressure src/vfr2atm_pressure.cpp)
 ament_target_dependencies(vfr2atm_pressure rclcpp mavros_msgs sensor_msgs)
 
 add_executable(dvl_to_twist_bridge src/dvl_to_twist_bridge.cpp)
+target_include_directories(dvl_to_twist_bridge PRIVATE include)
 ament_target_dependencies(dvl_to_twist_bridge rclcpp geometry_msgs auv_dvl_a50_msg)
 
 add_executable(dvl_position_to_odom_bridge src/dvl_position_to_odom_bridge.cpp)
@@ -61,6 +75,7 @@ ament_target_dependencies(
 )
 
 add_executable(pressure_to_depth_pose src/pressure_to_depth_pose.cpp)
+target_include_directories(pressure_to_depth_pose PRIVATE include)
 ament_target_dependencies(pressure_to_depth_pose rclcpp geometry_msgs sensor_msgs)
 
 add_executable(localization_debug src/localization_debug.cpp)
