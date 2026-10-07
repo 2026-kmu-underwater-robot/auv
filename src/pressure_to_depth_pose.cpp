@@ -25,11 +25,11 @@ public:
     surface_pressure_pa_ = declare_parameter<double>("surface_pressure_pa", 101325.0);
     zero_at_start_ = declare_parameter<bool>("zero_at_start", true);
     depth_offset_m_ = declare_parameter<double>("depth_offset_m", 0.0);
-    z_variance_ = declare_parameter<double>("z_variance", 0.05);
+    z_variance_ = declare_parameter<double>("z_variance", 1.0e-4);
     enable_depth_gate_ = declare_parameter<bool>("enable_depth_gate", true);
     max_vertical_speed_mps_ =
-      declare_parameter<double>("max_vertical_speed_mps", 2.0);
-    jump_tolerance_m_ = declare_parameter<double>("jump_tolerance_m", 0.10);
+      declare_parameter<double>("max_vertical_speed_mps", 1.2);
+    jump_tolerance_m_ = declare_parameter<double>("jump_tolerance_m", 0.02);
     max_rate_dt_s_ = declare_parameter<double>("max_rate_dt_s", 0.5);
     const auto configured_reacquire_good_samples =
       declare_parameter<std::int64_t>("reacquire_good_samples", 3);

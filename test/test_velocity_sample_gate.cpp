@@ -73,4 +73,19 @@ TEST(VelocitySampleGate, RejectedSampleDoesNotMoveAcceptedReference)
   EXPECT_NEAR(second_bad.velocity_delta_mps, 0.2828427, 1.0e-6);
 }
 
+TEST(VelocitySampleGate, ResetAcceptsANewReferenceAfterAnOutage)
+{
+  auv::VelocitySampleGate gate(0.65, 1.5, 0.04, 0.5);
+
+  EXPECT_EQ(
+    gate.update(0.60, 0.0, 0.0, kOneSecondNs).decision,
+    auv::VelocitySampleGate::Decision::ACCEPT);
+
+  gate.reset();
+
+  EXPECT_EQ(
+    gate.update(-0.60, 0.0, 0.0, kOneSecondNs + 10 * kOneSecondNs).decision,
+    auv::VelocitySampleGate::Decision::ACCEPT);
+}
+
 }  // namespace

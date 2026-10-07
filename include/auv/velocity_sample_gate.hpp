@@ -39,6 +39,15 @@ public:
   {
   }
 
+  void reset()
+  {
+    have_accepted_sample_ = false;
+    last_accepted_vx_ = 0.0;
+    last_accepted_vy_ = 0.0;
+    last_accepted_vz_ = 0.0;
+    last_accepted_time_ns_ = 0;
+  }
+
   Result update(double vx, double vy, double vz, std::int64_t sample_time_ns)
   {
     Result result;

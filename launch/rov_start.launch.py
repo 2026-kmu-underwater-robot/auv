@@ -129,23 +129,23 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("request_dvl_config_on_startup", default_value="true"),
         DeclareLaunchArgument("use_localization", default_value="true"),
         DeclareLaunchArgument("localization_params_file", default_value=localization_default),
-        DeclareLaunchArgument("dvl_twist_min_linear_variance", default_value="0.0"),
+        DeclareLaunchArgument("dvl_twist_min_linear_variance", default_value="0.00001"),
         DeclareLaunchArgument("dvl_twist_max_linear_variance", default_value="1.0"),
-        DeclareLaunchArgument("dvl_twist_covariance_scale", default_value="1.0"),
-        DeclareLaunchArgument("dvl_twist_max_fom", default_value="0.05"),
+        DeclareLaunchArgument("dvl_twist_covariance_scale", default_value="200.0"),
+        DeclareLaunchArgument("dvl_twist_max_fom", default_value="0.01"),
         DeclareLaunchArgument("dvl_twist_min_altitude", default_value="0.05"),
-        DeclareLaunchArgument("dvl_twist_min_valid_beams", default_value="3"),
-        DeclareLaunchArgument("dvl_twist_reacquire_good_samples", default_value="1"),
+        DeclareLaunchArgument("dvl_twist_min_valid_beams", default_value="4"),
+        DeclareLaunchArgument("dvl_twist_reacquire_good_samples", default_value="2"),
         DeclareLaunchArgument("dvl_twist_reacquire_duration", default_value="0.0"),
-        DeclareLaunchArgument("dvl_twist_max_velocity", default_value="0.8"),
-        DeclareLaunchArgument("dvl_twist_max_acceleration", default_value="1.0"),
-        DeclareLaunchArgument("dvl_twist_jump_tolerance", default_value="0.03"),
+        DeclareLaunchArgument("dvl_twist_max_velocity", default_value="0.65"),
+        DeclareLaunchArgument("dvl_twist_max_acceleration", default_value="1.5"),
+        DeclareLaunchArgument("dvl_twist_jump_tolerance", default_value="0.04"),
         DeclareLaunchArgument("dvl_twist_max_rate_dt", default_value="0.5"),
-        DeclareLaunchArgument("dvl_twist_recovery_trigger_gap", default_value="0.25"),
-        DeclareLaunchArgument("dvl_twist_recovery_initial_variance", default_value="1.0"),
-        DeclareLaunchArgument("dvl_twist_recovery_variance_decay", default_value="0.8"),
-        DeclareLaunchArgument("dvl_twist_recovery_variance_samples", default_value="56"),
-        DeclareLaunchArgument("use_dvl_position_odom", default_value="true"),
+        DeclareLaunchArgument("dvl_twist_recovery_trigger_gap", default_value="0.5"),
+        DeclareLaunchArgument("dvl_twist_recovery_initial_variance", default_value="0.04"),
+        DeclareLaunchArgument("dvl_twist_recovery_variance_decay", default_value="0.6"),
+        DeclareLaunchArgument("dvl_twist_recovery_variance_samples", default_value="15"),
+        DeclareLaunchArgument("use_dvl_position_odom", default_value="false"),
         DeclareLaunchArgument("dvl_position_odom_topic", default_value="/dvl/odometry"),
         DeclareLaunchArgument("dvl_position_frame", default_value="dvl_odom"),
         DeclareLaunchArgument("dvl_position_child_frame", default_value="dvl_link"),
@@ -162,9 +162,10 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("pressure_topic", default_value="/mavros/imu/static_pressure"),
         DeclareLaunchArgument("pressure_input_mode", default_value="pressure_pa"),
         DeclareLaunchArgument("fluid_density", default_value="1000.0"),
+        DeclareLaunchArgument("depth_z_variance", default_value="0.0001"),
         DeclareLaunchArgument("enable_depth_gate", default_value="true"),
-        DeclareLaunchArgument("depth_gate_max_vertical_speed", default_value="2.0"),
-        DeclareLaunchArgument("depth_gate_jump_tolerance", default_value="0.10"),
+        DeclareLaunchArgument("depth_gate_max_vertical_speed", default_value="1.2"),
+        DeclareLaunchArgument("depth_gate_jump_tolerance", default_value="0.02"),
         DeclareLaunchArgument("depth_gate_max_rate_dt", default_value="0.5"),
         DeclareLaunchArgument("depth_gate_reacquire_good_samples", default_value="3"),
         DeclareLaunchArgument("depth_gate_reacquire_variance_samples", default_value="3"),
@@ -232,6 +233,7 @@ def generate_launch_description() -> LaunchDescription:
     pressure_topic = LaunchConfiguration("pressure_topic")
     pressure_input_mode = LaunchConfiguration("pressure_input_mode")
     fluid_density = LaunchConfiguration("fluid_density")
+    depth_z_variance = LaunchConfiguration("depth_z_variance")
     enable_depth_gate = LaunchConfiguration("enable_depth_gate")
     depth_gate_max_vertical_speed = LaunchConfiguration("depth_gate_max_vertical_speed")
     depth_gate_jump_tolerance = LaunchConfiguration("depth_gate_jump_tolerance")
@@ -536,6 +538,7 @@ def generate_launch_description() -> LaunchDescription:
                 {"input_mode": pressure_input_mode},
                 {"world_frame": "odom"},
                 {"fluid_density": ParameterValue(fluid_density, value_type=float)},
+                {"z_variance": ParameterValue(depth_z_variance, value_type=float)},
                 {"enable_depth_gate": ParameterValue(enable_depth_gate, value_type=bool)},
                 {
                     "max_vertical_speed_mps": ParameterValue(
